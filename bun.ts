@@ -1,10 +1,10 @@
-import app from "./app";
+import app from "./src/app";
 
 const PORT = parseInt(process.env.PORT || "8080");
 
 Bun.serve({
   port: PORT,
-  fetch: app.fetch,
+  fetch: (request) => app.fetch(request, process.env as any),
 });
 
-console.log(`indigestion listening on http://localhost:${PORT}`);
+console.log(`indigest listening on http://localhost:${PORT}`);

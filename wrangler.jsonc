@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "indigest",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-07-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "API_USERNAME": "admin",
+    "LOCKDOWN_USERS": "U07VA44DNBA,U09Q8MLTE58,U07EB2Y76DP",
+    "SLACK_CLIENT_ID": "2210535565.11557816933424",
+  }
+}

@@ -51,5 +51,22 @@ export async function pushSchema(connectionString: string) {
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT ''
   `);
 
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+      subscriber_channel_id TEXT NOT NULL,
+      source_channel_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT now()
+    )
+  `);
+
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions ON subscriptions(subscriber_channel_id, source_channel_id)
+  `);
+
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_source ON subscriptions(source_channel_id)
+  `);
+
   await client.end();
 }

@@ -12,7 +12,7 @@ services:
       - HACK_CLUB_CDN_KEY=${HACK_CLUB_CDN_KEY}
       - API_USERNAME=${API_USERNAME}
       - API_PASSWORD=${API_PASSWORD}
-      - DATABASE_URL=postgres://indigestion:indigestion@db:5432/indigestion
+      - DATABASE_URL=postgres://indigest:indigest@db:5432/indigest
     depends_on:
       db:
         condition: service_healthy
@@ -23,13 +23,13 @@ services:
     ports:
       - "5433:5432"
     environment:
-      POSTGRES_USER: indigestion
-      POSTGRES_PASSWORD: indigestion
-      POSTGRES_DB: indigestion
+      POSTGRES_USER: indigest
+      POSTGRES_PASSWORD: indigest
+      POSTGRES_DB: indigest
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U indigestion"]
+      test: ["CMD-SHELL", "pg_isready -U indigest"]
       interval: 5s
       timeout: 5s
       retries: 5

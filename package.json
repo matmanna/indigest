@@ -1,11 +1,11 @@
 {
-  "name": "indigestion",
+  "name": "indigest",
   "type": "module",
   "private": true,
   "scripts": {
     "start": "bun run bun.ts",
     "test": "bun test",
-    "test:pg": "TEST_DATABASE_URL=postgres://indigestion:indigestion@localhost:5433/indigestion_test bun test",
+    "test:pg": "TEST_DATABASE_URL=postgres://indigest:indigest@localhost:5433/indigest_test bun test",
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
@@ -16,13 +16,16 @@
     "vercel:deploy": "vercel deploy --prod"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260721.1",
     "@types/bun": "latest",
-    "drizzle-kit": "^0.31.10"
+    "drizzle-kit": "^0.31.10",
+    "wrangler": "^4.113.0"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
     "@orpc/client": "^1.14.7",
     "@orpc/openapi": "^1.14.7",
     "@orpc/server": "^1.14.7",
