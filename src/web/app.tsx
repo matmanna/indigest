@@ -83,10 +83,24 @@ function ChannelNode({ data }: { data: any }) {
 
 function FeedNode({ data }: { data: any }) {
   const labels: Record<string, string> = { rss: "rss", api: "api", webhook: "webhook" };
+  const linkFor = (): string | null => {
+    const channelId = data.channelId;
+    if (!channelId) return null;
+    if (data.feedType === "rss") return `/feed/${encodeURIComponent(channelId)}`;
+    if (data.feedType === "api") return `/api/messages?channel=${encodeURIComponent(channelId)}`;
+    if (data.feedType === "webhook") return data.url || null;
+    return null;
+  };
+  const href = linkFor();
   return (
     <div class="node-feed">
       <Handle type="target" position={Position.Left} />
-      [{labels[data.feedType] || "feed"}]
+      <span>[{labels[data.feedType] || "feed"}]</span>
+      {href && (
+        <a class="node-link" href={href} target={href.startsWith("http") ? "_blank" : undefined} rel={href.startsWith("http") ? "noopener" : undefined}>
+          open ↗
+        </a>
+      )}
     </div>
   );
 }

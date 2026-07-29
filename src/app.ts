@@ -1789,42 +1789,48 @@ app.post("/slack/", slackSlashCommand);
 
 // === RSS Feed / JSON API ===
 app.get("/feed/:channelId", async (c) => {
-  const env = c.env;
-  const rawId = c.req.param("channelId")!;
-  const wantsJson = rawId.endsWith(".json") || c.req.header("accept")?.includes("application/json");
-  const channelId = wantsJson ? rawId.replace(/\.json$/, "") : rawId;
-  const store = await getStore(env.DATABASE_URL);
-  const ch = await store.getChannel(channelId);
-  if (!ch || !ch.enabled) {
-    return c.json({ error: "not found", id: channelId }, 404);
-  }
+  try {
+    const env = c.env;
+    const rawId = c.req.param("channelId")!;
+    const wantsJson = rawId.endsWith(".json") || c.req.header("accept")?.includes("application/json");
+    const channelId = wantsJson ? rawId.replace(/\.json$/, "") : rawId;
+    const store = await getStore(env.DATABASE_URL);
+    const ch = await store.getChannel(channelId);
+    if (!ch || !ch.enabled) {
+      return c.json({ error: "not found", id: channelId }, 404);
+    }
 
-  const limit = Math.min(parseInt(c.req.query("limit") || "50") || 50, 200);
-  const offset = parseInt(c.req.query("offset") || "0") || 0;
-  const msgs = await store.getMessages(channelId, limit, offset);
+    const limit = Math.min(parseInt(c.req.query("limit") || "50") || 50, 200);
+    const offset = parseInt(c.req.query("offset") || "0") || 0;
+    const msgs = await store.getMessages(channelId, limit, offset);
 
-  if (wantsJson) {
-    return c.json(msgs);
-  }
+    if (wantsJson) {
+      return c.json(msgs);
+    }
 
-  const baseUrl = env.BASE_URL || "http://localhost:8080";
-  const feed = new Feed({
-    title: `#${ch.name} — indigest`,
-    link: `${baseUrl}/feed/${channelId}`,
-    description: `Recent messages from #${ch.name}`,
-  });
-
-  for (const m of msgs) {
-    feed.addItem({
-      title: m.userName || "unknown",
-      description: m.text.substring(0, 500),
-      date: new Date(m.timestamp),
-      guid: `${channelId}:${m.slackTs}`,
+    const baseUrl = env.BASE_URL || "http://localhost:8080";
+    const feed = new Feed({
+      title: `#${ch.name} — indigest`,
       link: `${baseUrl}/feed/${channelId}`,
+      description: `Recent messages from #${ch.name}`,
     });
-  }
 
-  return c.text(feed.rss2(), 200, { "Content-Type": "application/rss+xml; charset=utf-8" });
+    for (const m of msgs) {
+      feed.addItem({
+        title: m.userName || "unknown",
+        description: m.text.substring(0, 500),
+        date: new Date(m.timestamp),
+        guid: `${channelId}:${m.slackTs}`,
+        link: `${baseUrl}/feed/${channelId}`,
+      });
+    }
+
+    return c.text(feed.rss2(), 200, { "Content-Type": "application/rss+xml; charset=utf-8" });
+  } catch (err: any) {
+    console.error("feed error:", err?.message || err);
+    c.header("Retry-After", "2");
+    return c.text("Service Unavailable", 503);
+  }
 });
 
 // === REST API ===
@@ -1921,6 +1927,57 @@ app.get("/api/graph", async (c) => {
 const storeCache = new Map<string, Store>();
 const ddlRan = new Set<string>();
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientDbError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes("econnreset") ||
+    msg.includes("econnrefused") ||
+    msg.includes("etimedout") ||
+    msg.includes("timeout") ||
+    msg.includes("network") ||
+    msg.includes("fetch failed") ||
+    msg.includes("dns") ||
+    msg.includes("getaddrinfo") ||
+    msg.includes("connection terminated") ||
+    msg.includes("failed query")
+  );
+}
+
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientDbError(err) || i === attempts - 1) throw err;
+      await sleep(50 * Math.pow(2, i));
+    }
+  }
+  throw lastErr;
+}
+
+function retryingStore(store: Store): Store {
+  return {
+    getChannel: (id) => withRetry(() => store.getChannel(id)),
+    upsertChannel: (ch) => withRetry(() => store.upsertChannel(ch)),
+    listEnabledChannels: () => withRetry(() => store.listEnabledChannels()),
+    upsertMessage: (msg) => withRetry(() => store.upsertMessage(msg)),
+    deleteMessage: (channelId, slackTs) => withRetry(() => store.deleteMessage(channelId, slackTs)),
+    getMessages: (channelId, limit, offset) => withRetry(() => store.getMessages(channelId, limit, offset)),
+    addSubscription: (subscriberChannelId, sourceChannelId) => withRetry(() => store.addSubscription(subscriberChannelId, sourceChannelId)),
+    removeSubscription: (subscriberChannelId, sourceChannelId) => withRetry(() => store.removeSubscription(subscriberChannelId, sourceChannelId)),
+    getSubscribersBySource: (sourceChannelId) => withRetry(() => store.getSubscribersBySource(sourceChannelId)),
+    getSubscriptionsBySubscriber: (subscriberChannelId) => withRetry(() => store.getSubscriptionsBySubscriber(subscriberChannelId)),
+    getRecentMessages: (channelId, since) => withRetry(() => store.getRecentMessages(channelId, since)),
+    close: () => store.close(),
+  };
+}
+
 async function runDdlOnce(databaseUrl: string) {
   if (ddlRan.has(databaseUrl)) return;
   ddlRan.add(databaseUrl);
@@ -1962,6 +2019,7 @@ async function getStore(databaseUrl: string): Promise<Store> {
     const { PostgresStore } = await import("./store/pg");
     store = new PostgresStore(databaseUrl);
   }
+  store = retryingStore(store);
   storeCache.set(databaseUrl, store);
   if (isNeon) runDdlOnce(databaseUrl).catch(() => {});
   return store;

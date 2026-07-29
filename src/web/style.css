@@ -254,6 +254,9 @@ body {
   border: 1px solid var(--border);
   border-radius: 3px;
   background: var(--surface);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 .node-subscription {
   padding: 0.25rem 0.5rem;
