@@ -630,29 +630,6 @@ app.get("/spec.json", (c) => {
   return c.json(spec);
 });
 
-app.get("/", (c) => {
-  const html = `
-    <!doctype html>
-    <html>
-      <head>
-        <title>indigest API</title>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-      </head>
-      <body>
-        <div id="app"></div>
-        <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
-        <script>
-          Scalar.createApiReference('#app', {
-            url: '/spec.json',
-          })
-        </script>
-      </body>
-    </html>
-  `;
-  return c.html(html);
-});
-
 // === Slack Events ===
 app.post("/events", async (c) => {
   const env = c.env;
@@ -1903,71 +1880,77 @@ app.get("/api/messages/:slackTs", async (c) => {
   return c.json({ data: msg });
 });
 
+// --- Graph API (for React Flow diagram) ---
+app.get("/api/graph", async (c) => {
+  const env = c.env;
+  const store = await getStore(env.DATABASE_URL);
+
+  const channels = await store.listEnabledChannels();
+  const nodes: Array<{ id: string; type: string; label: string; data: Record<string, any> }> = [];
+  const edges: Array<{ id: string; source: string; target: string; label?: string; animated: boolean }> = [];
+
+  for (const ch of channels) {
+    nodes.push({ id: `ch:${ch.id}`, type: "channel", label: `#${ch.name || ch.id}`, data: { channelId: ch.id, name: ch.name, webhookUrl: ch.webhookUrl, metadataSchema: ch.metadataSchema, trackReplies: ch.trackReplies, approvedPosters: ch.approvedPosters, autoApproveUsers: ch.autoApproveUsers?.join(", ") || "", enabled: ch.enabled, createdAt: ch.createdAt } });
+    nodes.push({ id: `rss:${ch.id}`, type: "feed", label: "RSS Feed", data: { feedType: "rss", channelId: ch.id } });
+    edges.push({ id: `e-rss-${ch.id}`, source: `ch:${ch.id}`, target: `rss:${ch.id}`, animated: true });
+    nodes.push({ id: `api:${ch.id}`, type: "feed", label: "API Feed", data: { feedType: "api", channelId: ch.id } });
+    edges.push({ id: `e-api-${ch.id}`, source: `ch:${ch.id}`, target: `api:${ch.id}`, animated: true });
+    if (ch.webhookUrl) {
+      nodes.push({ id: `wh:${ch.id}`, type: "feed", label: "Webhook", data: { feedType: "webhook", channelId: ch.id, url: ch.webhookUrl } });
+      edges.push({ id: `e-wh-${ch.id}`, source: `ch:${ch.id}`, target: `wh:${ch.id}`, animated: true });
+    }
+    const subscribers = await store.getSubscribersBySource(ch.id);
+    for (const sub of subscribers) {
+      const subCh = await store.getChannel(sub.subscriberChannelId);
+      const subLabel = subCh ? `#${subCh.name || subCh.id}` : sub.subscriberChannelId;
+      if (!nodes.find((n) => n.id === `sub:${sub.subscriberChannelId}`)) {
+        nodes.push({ id: `sub:${sub.subscriberChannelId}`, type: "subscriber", label: subLabel, data: { channelId: sub.subscriberChannelId, name: subCh?.name, webhookUrl: subCh?.webhookUrl, metadataSchema: subCh?.metadataSchema, trackReplies: subCh?.trackReplies, approvedPosters: subCh?.approvedPosters, autoApproveUsers: subCh?.autoApproveUsers?.join(", ") || "", enabled: subCh?.enabled, createdAt: subCh?.createdAt } });
+      }
+      edges.push({ id: `e-sub-${ch.id}-${sub.subscriberChannelId}`, source: `ch:${ch.id}`, target: `sub:${sub.subscriberChannelId}`, label: "[sub]", animated: true });
+    }
+  }
+
+  return c.json({ data: { nodes, edges } });
+});
+
 // --- Store (lazy singleton per DB URL) ---
 
 const storeCache = new Map<string, Store>();
+const ddlRan = new Set<string>();
+
+async function runDdlOnce(databaseUrl: string) {
+  if (ddlRan.has(databaseUrl)) return;
+  ddlRan.add(databaseUrl);
+  const { neon } = await import("@neondatabase/serverless");
+  const sql = neon(databaseUrl);
+  const stmts = [
+    sql`CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', team_id TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, webhook_url TEXT NOT NULL DEFAULT '', auto_approve_users TEXT NOT NULL DEFAULT '', approved_posters TEXT NOT NULL DEFAULT '', track_replies INTEGER NOT NULL DEFAULT 0, metadata_schema TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (now() at time zone 'utc'))`,
+    sql`CREATE TABLE IF NOT EXISTS messages (id SERIAL PRIMARY KEY, slack_ts TEXT NOT NULL, channel_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '', user_name TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '', thread_ts TEXT, timestamp TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}')`,
+    sql`CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, subscriber_channel_id TEXT NOT NULL, source_channel_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (now() at time zone 'utc'))`,
+    sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_channel_ts ON messages(channel_id, slack_ts)`,
+    sql`CREATE INDEX IF NOT EXISTS idx_messages_channel_ts ON messages(channel_id, timestamp DESC)`,
+    sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions ON subscriptions(subscriber_channel_id, source_channel_id)`,
+    sql`CREATE INDEX IF NOT EXISTS idx_subscriptions_source ON subscriptions(source_channel_id)`,
+    sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS auto_approve_users TEXT NOT NULL DEFAULT ''`,
+    sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS approved_posters TEXT NOT NULL DEFAULT ''`,
+    sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS track_replies INTEGER NOT NULL DEFAULT 0`,
+    sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS metadata_schema TEXT NOT NULL DEFAULT ''`,
+    sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS thread_ts TEXT`,
+  ];
+  for (const stmt of stmts) { try { await stmt; } catch {} }
+}
 
 async function getStore(databaseUrl: string): Promise<Store> {
-  // Always run DDL (idempotent) to handle schema changes across deploys.
-  // On Workers, module-level state persists in warm isolates, so a cached
-  // store may have been created with an older schema that's missing columns.
+  const cached = storeCache.get(databaseUrl);
+  if (cached) return cached;
+
   const isNeon = databaseUrl.includes("neon.tech") || databaseUrl.includes("neondb");
 
-  if (isNeon) {
-    const { neon } = await import("@neondatabase/serverless");
-    const sql = neon(databaseUrl);
-    await Promise.all([
-      sql`CREATE TABLE IF NOT EXISTS channels (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL DEFAULT '',
-        team_id TEXT NOT NULL DEFAULT '',
-        enabled INTEGER NOT NULL DEFAULT 0,
-        webhook_url TEXT NOT NULL DEFAULT '',
-        auto_approve_users TEXT NOT NULL DEFAULT '',
-        approved_posters TEXT NOT NULL DEFAULT '',
-        track_replies INTEGER NOT NULL DEFAULT 0,
-        metadata_schema TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL DEFAULT now()
-      )`,
-      sql`CREATE TABLE IF NOT EXISTS messages (
-        id SERIAL PRIMARY KEY,
-        slack_ts TEXT NOT NULL,
-        channel_id TEXT NOT NULL,
-        user_id TEXT NOT NULL DEFAULT '',
-        user_name TEXT NOT NULL DEFAULT '',
-        text TEXT NOT NULL DEFAULT '',
-        thread_ts TEXT,
-        timestamp TEXT NOT NULL,
-        metadata JSONB NOT NULL DEFAULT '{}'
-      )`,
-      sql`CREATE TABLE IF NOT EXISTS subscriptions (
-        id SERIAL PRIMARY KEY,
-        subscriber_channel_id TEXT NOT NULL,
-        source_channel_id TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT now()
-      )`,
-    ]);
-    await Promise.all([
-      sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_channel_ts ON messages(channel_id, slack_ts)`,
-      sql`CREATE INDEX IF NOT EXISTS idx_messages_channel_ts ON messages(channel_id, timestamp DESC)`,
-      sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions ON subscriptions(subscriber_channel_id, source_channel_id)`,
-      sql`CREATE INDEX IF NOT EXISTS idx_subscriptions_source ON subscriptions(source_channel_id)`,
-    ]);
-    for (const [col, query] of [
-      ["auto_approve_users", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS auto_approve_users TEXT NOT NULL DEFAULT ''`],
-      ["approved_posters", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS approved_posters TEXT NOT NULL DEFAULT ''`],
-      ["track_replies", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS track_replies INTEGER NOT NULL DEFAULT 0`],
-      ["metadata_schema", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS metadata_schema TEXT NOT NULL DEFAULT ''`],
-      ["thread_ts", sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS thread_ts TEXT`],
-    ] as const) {
-      try { await query; } catch (err: any) { console.error(`getStore DDL: failed to add column ${col}:`, err.message); }
-    }
-  } else {
+  if (!isNeon) {
     const { pushSchema } = await import("./db/migrate");
     await pushSchema(databaseUrl);
   }
 
-  // Always (re)create the store so it picks up any schema changes
   let store: Store;
   if (isNeon) {
     const { NeonStore } = await import("./store/neon");
@@ -1977,6 +1960,7 @@ async function getStore(databaseUrl: string): Promise<Store> {
     store = new PostgresStore(databaseUrl);
   }
   storeCache.set(databaseUrl, store);
+  if (isNeon) runDdlOnce(databaseUrl).catch(() => {});
   return store;
 }
 
