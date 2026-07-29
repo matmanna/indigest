@@ -285,21 +285,23 @@ async function forwardToSubscribers(
         icon_url: postIcon,
         unfurl_links: suppressUnfurl ? false : undefined,
         unfurl_media: suppressUnfurl ? false : undefined,
-        text: originalText
+        text: (originalText
           ? `📰 *${postUsername}* in #${sourceChannel.name}:\n${originalText}`
           : forwardLink
             ? `📰 Forwarded from #${sourceChannel.name}\n${forwardLink}`
-            : `📰 *${displayName}* in #${sourceChannel.name}:\n${msg.text}`,
+            : `📰 *${displayName}* in #${sourceChannel.name}:\n${msg.text}`
+        ).slice(0, 3000),
         blocks: [
           {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: originalText
+              text: (originalText
                 ? originalText
                 : forwardLink
                   ? `<${forwardLink}|🔗 View forwarded message>`
-                  : msg.text || "_[no text]_",
+                  : msg.text || "_[no text]_"
+              ).slice(0, 3000),
             },
           },
           {
@@ -507,6 +509,9 @@ app.get("/spec.json", (c) => {
 **Manual Mode:**
 - \`/in pub manual\` — Every message gets a manual Yep!/No prompt.
 
+**Thread Replies:**
+- \`/in pub replies\` — Track thread replies and store reply relationships.
+
 **Subscriptions:**
 - \`/in sub #channel\` — Subscribe this channel to receive messages from #channel.
 - \`/in unsub #channel\` — Unsubscribe from a channel.
@@ -666,7 +671,7 @@ app.post("/events", async (c) => {
   c.res = new Response("ok", { status: 200, headers: { "Content-Type": "text/plain" } });
 
   c.executionCtx.waitUntil((async () => {
-    console.log("Received Slack event:", payload.event?.type);
+    console.log("Received Slack event:", payload.event?.type, "thread_ts:", payload.event?.thread_ts, "channel:", payload.event?.channel);
     const ev = payload.event;
     const store = await getStore(env.DATABASE_URL);
     const slack = new WebClient(env.SLACK_BOT_TOKEN);
@@ -682,6 +687,7 @@ app.post("/events", async (c) => {
         webhookUrl: "",
         autoApproveUsers: [],
         approvedPosters: [],
+        trackReplies: false,
         metadataSchema: "",
         createdAt: "",
       };
@@ -771,10 +777,12 @@ app.post("/events", async (c) => {
                   },
                 ],
               });
-            } catch {}
+        } catch {}
           }
         }
+
       } else {
+        // Non-auto-approve: prompt for manual approval
         const section = {
           type: "section",
           text: { type: "mrkdwn", text: `Expose this message to indigest via RSS and API?\n>${ev.text}\n` },
@@ -806,6 +814,51 @@ app.post("/events", async (c) => {
         } catch {}
       }
     }
+
+    // Thread reply tracking (separate from the top-level message handler above)
+    if (ev.type === "message" && !ev.subtype && !ev.bot_id && ev.thread_ts) {
+      console.log(`Thread reply: channel=${ev.channel} thread_ts=${ev.thread_ts} ts=${ev.ts}`);
+      const ch = await store.getChannel(ev.channel);
+      console.log(`Channel lookup: ch=${!!ch} enabled=${ch?.enabled} trackReplies=${ch?.trackReplies}`);
+      if (!ch || !ch.enabled || !ch.trackReplies) return;
+
+      // Store the parent message if not already stored
+      const existingParent = (await store.getMessages(ev.channel, 200, 0)).find((m) => m.slackTs === ev.thread_ts);
+      if (!existingParent) {
+        try {
+          const parentHistory = await slack.conversations.history({ channel: ev.channel, latest: ev.thread_ts!, limit: 1, inclusive: true });
+          const parentMsg = parentHistory.messages?.[0] as any;
+          if (parentMsg && !parentMsg.subtype && !parentMsg.bot_id) {
+            let parentUserName = parentMsg.user || "";
+            try { const u = await slack.users.info({ user: parentMsg.user }); parentUserName = (u.user as any)?.name || parentMsg.user; } catch {}
+            await store.upsertMessage({
+              slackTs: ev.thread_ts!,
+              channelId: ev.channel,
+              userId: parentMsg.user || "",
+              userName: parentUserName,
+              text: parentMsg.text || "",
+              timestamp: slackTsToTime(ev.thread_ts!).toISOString(),
+              metadata: {},
+            });
+          }
+        } catch {}
+      }
+
+      // Store the reply
+      let userName = ev.user;
+      try { const u = await slack.users.info({ user: ev.user }); userName = (u.user as any)?.name || ev.user; } catch {}
+      await store.upsertMessage({
+        slackTs: ev.ts,
+        channelId: ev.channel,
+        threadTs: ev.thread_ts,
+        userId: ev.user,
+        userName,
+        text: ev.text,
+        timestamp: slackTsToTime(ev.ts).toISOString(),
+        metadata: {},
+      });
+      console.log(`Thread reply stored: ts=${ev.ts} threadTs=${ev.thread_ts}`);
+    }
   })());
 });
 
@@ -819,7 +872,50 @@ app.post("/interactions", async (c) => {
 
   const cb = JSON.parse(payloadStr);
 
-  // Respond immediately to prevent Slack timeout
+  // Metadata modal must open BEFORE responding — trigger_id expires in 3 seconds
+  if (cb.type === "block_actions") {
+    const action = cb.actions?.[0];
+    if (action?.action_id === "indigest_metadata") {
+      const store = await getStore(env.DATABASE_URL);
+      const slack = new WebClient(env.SLACK_BOT_TOKEN);
+      const channelId = cb.channel?.id;
+      const messageTs = action.value;
+      const triggerId = cb.trigger_id;
+      const responseUrl = cb.response_url;
+
+      const ch = await store.getChannel(channelId);
+      if (!ch || !ch.enabled || !ch.metadataSchema) {
+        return c.json({ response_action: "update", view: { type: "modal", title: { type: "plain_text", text: "Error" }, blocks: [{ type: "section", text: { type: "mrkdwn", text: "No metadata schema configured for this channel." } }] } });
+      }
+      let schema: any = null;
+      try { schema = JSON.parse(ch.metadataSchema); } catch {}
+      if (!schema || schema.fields?.length === 0) {
+        return c.json({ response_action: "update", view: { type: "modal", title: { type: "plain_text", text: "Error" }, blocks: [{ type: "section", text: { type: "mrkdwn", text: "No metadata schema configured for this channel." } }] } });
+      }
+      const { openMetadataModal } = await import("./api/modal");
+      try {
+        await openMetadataModal(slack, triggerId, channelId, messageTs, schema, cb.container?.message_ts);
+      } catch (err: any) {
+        return c.json({ response_action: "update", view: { type: "modal", title: { type: "plain_text", text: "Error" }, blocks: [{ type: "section", text: { type: "mrkdwn", text: `Error opening form: ${err.message}` } }] } });
+      }
+
+      // Permission check after modal opens
+      c.executionCtx.waitUntil((async () => {
+        const clickingUser = cb.user?.id || "";
+        const lockdownUsers = (env.LOCKDOWN_USERS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
+        const isManager = lockdownUsers.includes(clickingUser) || await isChannelManager(channelId, clickingUser, slack);
+        if (isManager) return;
+        const msgs = await store.getMessages(channelId, 100, 0);
+        const originalMsg = msgs.find((m) => m.slackTs === messageTs);
+        if (originalMsg?.userId !== clickingUser) {
+          await slackResponse(responseUrl, "Only the original author or channel managers can edit metadata.");
+        }
+      })());
+      return c.json({});
+    }
+  }
+
+  // Respond immediately for everything else to prevent Slack timeout
   c.res = new Response(JSON.stringify({}), {
     status: 200,
     headers: { "Content-Type": "application/json" },
@@ -831,7 +927,7 @@ app.post("/interactions", async (c) => {
 
   if (cb.type === "view_submission" && cb.view?.callback_id === "metadata_modal") {
     const privateMeta = JSON.parse(cb.view.private_metadata || "{}");
-    const { channelId, messageTs } = privateMeta;
+    const { channelId, messageTs, botMessageTs } = privateMeta;
     const channel = await store.getChannel(channelId);
     if (!channel || !channel.enabled) return;
 
@@ -889,8 +985,117 @@ app.post("/interactions", async (c) => {
         metadata,
       });
       await forwardToSubscribers({ slackTs: messageTs, channelId, userId: msg.user || "", userName, text: msg.text || "", timestamp: slackTsToTime(messageTs).toISOString(), metadata }, channel, store, slack);
-    } catch {}
+
+      // Update the bot's prompt to show approved state
+      if (botMessageTs) {
+        try {
+          await client.chat.update({
+            channel: channelId,
+            ts: botMessageTs,
+            text: "✅ Message approved and added to the feed!",
+            blocks: [
+              {
+                type: "section",
+                text: { type: "mrkdwn", text: "✅ *Message approved and added to the feed!*" },
+              },
+              {
+                type: "actions",
+                elements: [
+                  {
+                    type: "button",
+                    action_id: "indigest_no",
+                    text: { type: "plain_text", text: "Undo" },
+                    style: "danger" as const,
+                    value: messageTs,
+                  },
+                ],
+              },
+            ],
+          } as any);
+        } catch (err: any) { console.error("chat.update (view_submission) failed:", err.message); }
+      }
+    } catch (err: any) { console.error("view_submission error:", err.message); }
     return;
+  }
+
+  // Backfill shortcut: manually pub a message
+  if (cb.type === "message_action") {
+    const channelId = cb.channel?.id;
+    const messageTs = cb.message?.ts;
+    const triggerId = cb.trigger_id;
+    const clickingUser = cb.user?.id || "";
+
+    if (!channelId || !messageTs) {
+      await slackResponse(cb.response_url || "", "Could not identify the message to backfill.");
+      return c.json({});
+    }
+
+    c.executionCtx.waitUntil((async () => {
+      const store = await getStore(env.DATABASE_URL);
+      const slack = new WebClient(env.SLACK_BOT_TOKEN);
+
+      const lockdownUsers = (env.LOCKDOWN_USERS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
+      const isLockdown = lockdownUsers.includes(clickingUser);
+      const isManager = isLockdown || await isChannelManager(channelId, clickingUser, slack);
+
+      if (!isManager) {
+        const ch = await store.getChannel(channelId);
+        if (!ch || !ch.enabled) {
+          await slack.chat.postMessage({ channel: channelId, text: "❌ This channel isn't enabled for indigest. Run `/in pub` first." });
+          return;
+        }
+      }
+
+      try {
+        const history = await slack.conversations.history({ channel: channelId, latest: messageTs, limit: 1, inclusive: true });
+        const msg = history.messages?.[0] as any;
+        if (!msg || msg.subtype || msg.bot_id) {
+          await slack.chat.postMessage({ channel: channelId, text: "❌ That message can't be added to the feed (bot message or system message)." });
+          return;
+        }
+
+        let userName = msg.user || "";
+        try { const u = await slack.users.info({ user: msg.user }); userName = (u.user as any)?.name || msg.user; } catch {}
+
+        let msgPermalink = "";
+        if (isSlackPermalink(msg.text)) {
+          msgPermalink = msg.text.trim();
+        } else if (msg.attachments && msg.attachments.length > 0) {
+          const att = msg.attachments[0];
+          msgPermalink = att.from_url || att.original_url || att.permalink || "";
+          if (!msgPermalink && att.text && att.text.includes("slack.com/archives/")) {
+            const match = att.text.match(/https:\/\/\S+?slack\.com\/archives\/[A-Z0-9]+\/p\d+/);
+            if (match) msgPermalink = match[0];
+          }
+        }
+        const metadata = msgPermalink ? { slack_permalink: msgPermalink } : {};
+
+        const ch = await store.getChannel(channelId);
+        await store.upsertMessage({
+          slackTs: messageTs,
+          channelId,
+          userId: msg.user || "",
+          userName,
+          text: msg.text || "",
+          timestamp: slackTsToTime(messageTs).toISOString(),
+          metadata,
+        });
+
+        const savedMsg = { slackTs: messageTs, channelId, userId: msg.user || "", userName, text: msg.text || "", timestamp: slackTsToTime(messageTs).toISOString(), metadata };
+        if (ch) await fireWebhook(ch, savedMsg);
+        if (ch) await forwardToSubscribers(savedMsg, ch, store, slack);
+
+        await slack.chat.postMessage({
+          channel: channelId,
+          thread_ts: messageTs,
+          text: "✅ Message backfilled and added to the feed!",
+        });
+      } catch (err: any) {
+        console.error("backfill shortcut error:", err.message);
+        await slack.chat.postMessage({ channel: channelId, text: `❌ Error backfilling message: ${err.message}` });
+      }
+    })());
+    return c.json({});
   }
 
   if (cb.type !== "block_actions") return;
@@ -918,28 +1123,30 @@ app.post("/interactions", async (c) => {
     const isManager = isLockdown || await isChannelManager(channelId, clickingUser, slack);
 
     if (!isManager) {
-      if (ch.approvedPosters.length === 0) {
-        // Default: only the original poster can approve their own message
-        const msgs = await store.getMessages(channelId, 100, 0);
-        const originalMsg = msgs.find((m) => m.slackTs === messageTs);
-        if (originalMsg?.userId !== clickingUser) {
-          await slackResponse(responseUrl, "❌ Sorry, only the original poster or a channel manager can approve this message.");
-          return;
-        }
-      } else if (ch.approvedPosters.includes("poster")) {
-        // "poster" mode: original poster of each message can approve
-        const msgs = await store.getMessages(channelId, 100, 0);
-        const originalMsg = msgs.find((m) => m.slackTs === messageTs);
-        if (originalMsg?.userId !== clickingUser && !ch.approvedPosters.includes(clickingUser)) {
-          await slackResponse(responseUrl, "❌ Sorry, you can't do that due to the opt-in perms!");
-          return;
+      // Check if the message exists in the DB
+      const msgs = await store.getMessages(channelId, 100, 0);
+      const originalMsg = msgs.find((m) => m.slackTs === messageTs);
+
+      if (originalMsg) {
+        // Message exists — apply normal permission check
+        if (ch.approvedPosters.length === 0) {
+          if (originalMsg.userId !== clickingUser) {
+            await slackResponse(responseUrl, "❌ Sorry, only the original poster or a channel manager can approve this message.");
+            return;
+          }
+        } else if (ch.approvedPosters.includes("poster")) {
+          if (originalMsg.userId !== clickingUser && !ch.approvedPosters.includes(clickingUser)) {
+            await slackResponse(responseUrl, "❌ Sorry, you can't do that due to the opt-in perms!");
+            return;
+          }
+        } else {
+          if (!ch.approvedPosters.includes(clickingUser)) {
+            await slackResponse(responseUrl, "❌ Sorry, you can't do that due to the opt-in perms!");
+            return;
+          }
         }
       } else {
-        // Explicit user list
-        if (!ch.approvedPosters.includes(clickingUser)) {
-          await slackResponse(responseUrl, "❌ Sorry, you can't do that due to the opt-in perms!");
-          return;
-        }
+        // Message not in DB (was deleted via Undo/No) — allow re-approval
       }
     }
 
@@ -949,7 +1156,7 @@ app.post("/interactions", async (c) => {
       if (schema && schema.fields?.length > 0) {
         const { openMetadataModal } = await import("./api/modal");
         try {
-          await openMetadataModal(slack, triggerId, channelId, messageTs, schema);
+        await openMetadataModal(slack, triggerId, channelId, messageTs, schema, cb.container?.message_ts);
           await slackResponse(responseUrl, "");
           return;
         } catch (err: any) {
@@ -1015,7 +1222,9 @@ app.post("/interactions", async (c) => {
               },
             ],
           } as any);
-        } catch {}
+        } catch (err: any) { console.error("chat.update (yes) failed:", err.message, "botMessageTs:", botMessageTs, "channel:", channelId); }
+      } else {
+        console.warn("indigest_yes: botMessageTs is empty, skipping chat.update. container:", JSON.stringify(cb.container));
       }
 
       await slackResponse(responseUrl, "");
@@ -1023,6 +1232,11 @@ app.post("/interactions", async (c) => {
       await slackResponse(responseUrl, `Error: ${err.message}`);
     }
   } else if (action.action_id === "indigest_no") {
+    // Remove the message from the DB if it was previously approved
+    try {
+      await store.deleteMessage(channelId, messageTs);
+    } catch (err: any) { console.error("deleteMessage failed:", err.message); }
+
     // Update the bot's prompt to show declined state
     if (botMessageTs) {
       try {
@@ -1048,43 +1262,12 @@ app.post("/interactions", async (c) => {
             },
           ],
         } as any);
-      } catch {}
+      } catch (err: any) { console.error("chat.update (no) failed:", err.message, "botMessageTs:", botMessageTs, "channel:", channelId); }
+    } else {
+      console.warn("indigest_no: botMessageTs is empty, skipping chat.update. container:", JSON.stringify(cb.container));
     }
 
     await slackResponse(responseUrl, "");
-  } else if (action.action_id === "indigest_metadata") {
-    // Open modal immediately — trigger_id expires in 3 seconds
-    if (!ch.metadataSchema) {
-      await slackResponse(responseUrl, "No metadata schema configured for this channel.");
-      return;
-    }
-    let schema: any = null;
-    try { schema = JSON.parse(ch.metadataSchema); } catch {}
-    if (!schema || schema.fields?.length === 0) {
-      await slackResponse(responseUrl, "No metadata schema configured for this channel.");
-      return;
-    }
-    const { openMetadataModal } = await import("./api/modal");
-    try {
-      await openMetadataModal(slack, triggerId, channelId, messageTs, schema);
-    } catch (err: any) {
-      await slackResponse(responseUrl, `Error opening form: ${err.message}`);
-      return;
-    }
-
-    // Permission check after modal opens (can't block on it — trigger expires too fast)
-    const clickingUser = cb.user?.id || "";
-    const lockdownUsers = (env.LOCKDOWN_USERS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
-    const isManager = lockdownUsers.includes(clickingUser) || await isChannelManager(channelId, clickingUser, slack);
-    if (isManager) return;
-
-    // Check if clicking user is the original message author
-    const msgs = await store.getMessages(channelId, 100, 0);
-    const originalMsg = msgs.find((m) => m.slackTs === messageTs);
-    if (originalMsg?.userId !== clickingUser) {
-      await slackResponse(responseUrl, "Only the original author or channel managers can edit metadata.");
-      return;
-    }
   }
 
   return;
@@ -1157,7 +1340,7 @@ app.post("/slack", async (c) => {
       name = (conv.channel as any)?.name || targetChannelId;
     } catch {}
     const auth = await slack.auth.test();
-    ch = { id: targetChannelId, name, teamId: auth.team_id || "", enabled: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], metadataSchema: "", createdAt: "" };
+    ch = { id: targetChannelId, name, teamId: auth.team_id || "", enabled: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], trackReplies: false, metadataSchema: "", createdAt: "" };
     await store.upsertChannel(ch);
   }
 
@@ -1226,8 +1409,25 @@ console.log(`Slash command: user=${userId} channel=${targetChannelId} cmd=${cmd}
         return;
       }
 
+      if (subcmd === "replies") {
+        if (!(await targetManager())) {
+          await respond("Only the channel creator can toggle reply tracking.");
+          return;
+        }
+        ch.trackReplies = !ch.trackReplies;
+        ch.enabled = true;
+        await store.upsertChannel(ch);
+        const label = targetChannelId === sourceChannelId ? "this channel" : `#${ch.name}`;
+        if (ch.trackReplies) {
+          await respond(`📰 Reply tracking enabled for ${label}. Thread replies will now be backed up with their reply relationship.`);
+        } else {
+          await respond(`📰 Reply tracking disabled for ${label}.`);
+        }
+        return;
+      }
+
       if (subcmd) {
-        await respond("Usage: \`/in pub\` | \`/in pub #channel\` | \`/in pub auto @user\` | \`/in pub manual\`");
+        await respond("Usage: \`/in pub\` | \`/in pub #channel\` | \`/in pub auto @user\` | \`/in pub manual\` | \`/in pub replies\`");
         return;
       }
       if (!(await targetManager())) {
@@ -1419,7 +1619,7 @@ console.log(`Slash command: user=${userId} channel=${targetChannelId} cmd=${cmd}
           try {
             const s = JSON.parse(ch.metadataSchema);
             msg += `\nMetadata schema: ${s.fields?.length || 0} field(s)`;
-          } catch {}
+    } catch (err: any) { console.error("view_submission error:", err.message); }
         }
         if (ch.approvedPosters.length > 0) {
           if (ch.approvedPosters.includes("poster")) {
@@ -1432,6 +1632,7 @@ console.log(`Slash command: user=${userId} channel=${targetChannelId} cmd=${cmd}
         } else {
           msg += `\nApprovals: poster + managers (default)`;
         }
+        msg += `\nThread replies: ${ch.trackReplies ? "tracked" : "off"}`;
         const subs = await store.getSubscriptionsBySubscriber(targetChannelId);
         if (subs.length > 0) {
           const subNames = await Promise.all(subs.map(async (s) => {
@@ -1458,7 +1659,7 @@ console.log(`Slash command: user=${userId} channel=${targetChannelId} cmd=${cmd}
 
     default: {
       if (!cmd) {
-        await respond("Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`sub #channel\` — subscribe to another channel's feed\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\`");
+        await respond("Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\`");
         return;
       }
 
@@ -1600,7 +1801,7 @@ console.log(`Slash command: user=${userId} channel=${targetChannelId} cmd=${cmd}
         return;
       }
 
-      await respond("Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`sub #channel\` — subscribe to another channel's feed\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\`");
+      await respond("Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\`");
     }
   }
   })());
@@ -1707,13 +1908,12 @@ app.get("/api/messages/:slackTs", async (c) => {
 const storeCache = new Map<string, Store>();
 
 async function getStore(databaseUrl: string): Promise<Store> {
-  const existing = storeCache.get(databaseUrl);
-  if (existing) return existing;
+  // Always run DDL (idempotent) to handle schema changes across deploys.
+  // On Workers, module-level state persists in warm isolates, so a cached
+  // store may have been created with an older schema that's missing columns.
+  const isNeon = databaseUrl.includes("neon.tech") || databaseUrl.includes("neondb");
 
-  let store: Store;
-  console.log(`Initializing store for database URL: ${databaseUrl}`);
-  if (databaseUrl.includes("neon.tech") || databaseUrl.includes("neondb")) {
-    const { NeonStore } = await import("./store/neon");
+  if (isNeon) {
     const { neon } = await import("@neondatabase/serverless");
     const sql = neon(databaseUrl);
     await Promise.all([
@@ -1724,6 +1924,8 @@ async function getStore(databaseUrl: string): Promise<Store> {
         enabled INTEGER NOT NULL DEFAULT 0,
         webhook_url TEXT NOT NULL DEFAULT '',
         auto_approve_users TEXT NOT NULL DEFAULT '',
+        approved_posters TEXT NOT NULL DEFAULT '',
+        track_replies INTEGER NOT NULL DEFAULT 0,
         metadata_schema TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL DEFAULT now()
       )`,
@@ -1734,6 +1936,7 @@ async function getStore(databaseUrl: string): Promise<Store> {
         user_id TEXT NOT NULL DEFAULT '',
         user_name TEXT NOT NULL DEFAULT '',
         text TEXT NOT NULL DEFAULT '',
+        thread_ts TEXT,
         timestamp TEXT NOT NULL,
         metadata JSONB NOT NULL DEFAULT '{}'
       )`,
@@ -1749,18 +1952,30 @@ async function getStore(databaseUrl: string): Promise<Store> {
       sql`CREATE INDEX IF NOT EXISTS idx_messages_channel_ts ON messages(channel_id, timestamp DESC)`,
       sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions ON subscriptions(subscriber_channel_id, source_channel_id)`,
       sql`CREATE INDEX IF NOT EXISTS idx_subscriptions_source ON subscriptions(source_channel_id)`,
-      sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS auto_approve_users TEXT NOT NULL DEFAULT ''`,
-      sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS approved_posters TEXT NOT NULL DEFAULT ''`,
-      sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS metadata_schema TEXT NOT NULL DEFAULT ''`,
     ]);
+    for (const [col, query] of [
+      ["auto_approve_users", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS auto_approve_users TEXT NOT NULL DEFAULT ''`],
+      ["approved_posters", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS approved_posters TEXT NOT NULL DEFAULT ''`],
+      ["track_replies", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS track_replies INTEGER NOT NULL DEFAULT 0`],
+      ["metadata_schema", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS metadata_schema TEXT NOT NULL DEFAULT ''`],
+      ["thread_ts", sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS thread_ts TEXT`],
+    ] as const) {
+      try { await query; } catch (err: any) { console.error(`getStore DDL: failed to add column ${col}:`, err.message); }
+    }
+  } else {
+    const { pushSchema } = await import("./db/migrate");
+    await pushSchema(databaseUrl);
+  }
+
+  // Always (re)create the store so it picks up any schema changes
+  let store: Store;
+  if (isNeon) {
+    const { NeonStore } = await import("./store/neon");
     store = new NeonStore(databaseUrl);
   } else {
     const { PostgresStore } = await import("./store/pg");
-    const { pushSchema } = await import("./db/migrate");
-    await pushSchema(databaseUrl);
     store = new PostgresStore(databaseUrl);
   }
-
   storeCache.set(databaseUrl, store);
   return store;
 }

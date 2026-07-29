@@ -17,7 +17,7 @@ export class PostgresStore implements Store {
     const rows = await this.db.select().from(schema.channels).where(eq(schema.channels.id, id)).limit(1);
     if (rows.length === 0) return null;
     const r = rows[0]!;
-    return { id: r.id, name: r.name, teamId: r.teamId, enabled: Boolean(r.enabled), webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], metadataSchema: r.metadataSchema, createdAt: r.createdAt };
+    return { id: r.id, name: r.name, teamId: r.teamId, enabled: Boolean(r.enabled), webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt };
   }
 
   async upsertChannel(ch: StoreChannel): Promise<void> {
@@ -31,6 +31,7 @@ export class PostgresStore implements Store {
         webhookUrl: ch.webhookUrl,
         autoApproveUsers: ch.autoApproveUsers.join(","),
         approvedPosters: ch.approvedPosters.join(","),
+        trackReplies: ch.trackReplies ? 1 : 0,
         metadataSchema: ch.metadataSchema,
         createdAt: sql`COALESCE((SELECT created_at FROM channels WHERE id = ${ch.id}), now()::text)`,
       })
@@ -43,6 +44,7 @@ export class PostgresStore implements Store {
           webhookUrl: ch.webhookUrl,
           autoApproveUsers: ch.autoApproveUsers.join(","),
           approvedPosters: ch.approvedPosters.join(","),
+          trackReplies: ch.trackReplies ? 1 : 0,
           metadataSchema: ch.metadataSchema,
         },
       });
@@ -50,7 +52,7 @@ export class PostgresStore implements Store {
 
   async listEnabledChannels(): Promise<StoreChannel[]> {
     const rows = await this.db.select().from(schema.channels).where(eq(schema.channels.enabled, 1));
-    return rows.map((r) => ({ id: r.id, name: r.name, teamId: r.teamId, enabled: true, webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], metadataSchema: r.metadataSchema, createdAt: r.createdAt }));
+    return rows.map((r) => ({ id: r.id, name: r.name, teamId: r.teamId, enabled: true, webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt }));
   }
 
   async upsertMessage(msg: StoreMessage): Promise<void> {
@@ -62,6 +64,7 @@ export class PostgresStore implements Store {
         userId: msg.userId,
         userName: msg.userName,
         text: msg.text,
+        threadTs: msg.threadTs || null,
         timestamp: msg.timestamp,
         metadata: typeof msg.metadata === "string" ? msg.metadata : JSON.stringify(msg.metadata || {}),
       })
@@ -71,10 +74,15 @@ export class PostgresStore implements Store {
           userId: msg.userId,
           userName: msg.userName,
           text: msg.text,
+          threadTs: msg.threadTs || null,
           timestamp: msg.timestamp,
           metadata: typeof msg.metadata === "string" ? msg.metadata : JSON.stringify(msg.metadata || {}),
         },
       });
+  }
+
+  async deleteMessage(channelId: string, slackTs: string): Promise<void> {
+    await this.db.delete(schema.messages).where(and(eq(schema.messages.channelId, channelId), eq(schema.messages.slackTs, slackTs)));
   }
 
   async getMessages(channelId: string, limit = 50, offset = 0): Promise<StoreMessage[]> {
@@ -90,6 +98,7 @@ export class PostgresStore implements Store {
       id: r.id,
       slackTs: r.slackTs,
       channelId: r.channelId,
+      threadTs: r.threadTs || undefined,
       userId: r.userId,
       userName: r.userName,
       text: r.text,
@@ -157,6 +166,7 @@ export class PostgresStore implements Store {
       id: r.id,
       slackTs: r.slackTs,
       channelId: r.channelId,
+      threadTs: r.threadTs || undefined,
       userId: r.userId,
       userName: r.userName,
       text: r.text,

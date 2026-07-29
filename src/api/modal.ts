@@ -102,6 +102,7 @@ export async function openMetadataModal(
   channelId: string,
   messageTs: string,
   schema: MetadataSchema,
+  botMessageTs?: string,
 ) {
   const blocks = buildBlocks(schema);
 
@@ -113,7 +114,7 @@ export async function openMetadataModal(
       title: { type: "plain_text", text: schema.title, emoji: true },
       submit: { type: "plain_text", text: schema.submit_label || "Save to Feed", emoji: true },
       close: { type: "plain_text", text: "Cancel", emoji: true },
-      private_metadata: JSON.stringify({ channelId, messageTs }),
+      private_metadata: JSON.stringify({ channelId, messageTs, botMessageTs }),
       notify_on_close: true,
       blocks,
     } as any,

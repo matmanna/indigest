@@ -30,7 +30,7 @@ afterAll(() => {
 
 describe("PostgresStore", () => {
   it("should insert and retrieve a channel", async () => {
-    await store.upsertChannel({ id: "C001", name: "general", teamId: "T001", enabled: false, webhookUrl: "", autoApproveUsers: [], createdAt: "" });
+    await store.upsertChannel({ id: "C001", name: "general", teamId: "T001", enabled: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], trackReplies: false, metadataSchema: "", createdAt: "" });
     const ch = await store.getChannel("C001");
     expect(ch).not.toBeNull();
     expect(ch!.name).toBe("general");
@@ -38,7 +38,7 @@ describe("PostgresStore", () => {
   });
 
   it("should enable a channel via upsert", async () => {
-    await store.upsertChannel({ id: "C001", name: "general", teamId: "T001", enabled: true, webhookUrl: "", autoApproveUsers: [], createdAt: "" });
+    await store.upsertChannel({ id: "C001", name: "general", teamId: "T001", enabled: true, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], trackReplies: false, metadataSchema: "", createdAt: "" });
     const ch = await store.getChannel("C001");
     expect(ch!.enabled).toBe(true);
   });
@@ -46,7 +46,7 @@ describe("PostgresStore", () => {
   it("should update channel fields on upsert", async () => {
     await store.upsertChannel({
       id: "C001", name: "updated-name", teamId: "T001", enabled: true,
-      webhookUrl: "https://hook.example.com", autoApproveUsers: ["U1", "U2"], createdAt: "",
+      webhookUrl: "https://hook.example.com", autoApproveUsers: ["U1", "U2"], approvedPosters: [], trackReplies: false, metadataSchema: "", createdAt: "",
     });
     const ch = await store.getChannel("C001");
     expect(ch!.name).toBe("updated-name");
@@ -55,8 +55,8 @@ describe("PostgresStore", () => {
   });
 
   it("should list only enabled channels", async () => {
-    await store.upsertChannel({ id: "C002", name: "random", teamId: "T001", enabled: false, webhookUrl: "", autoApproveUsers: [], createdAt: "" });
-    await store.upsertChannel({ id: "C003", name: "dev", teamId: "T001", enabled: true, webhookUrl: "", autoApproveUsers: [], createdAt: "" });
+    await store.upsertChannel({ id: "C002", name: "random", teamId: "T001", enabled: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], trackReplies: false, metadataSchema: "", createdAt: "" });
+    await store.upsertChannel({ id: "C003", name: "dev", teamId: "T001", enabled: true, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], trackReplies: false, metadataSchema: "", createdAt: "" });
     const enabled = await store.listEnabledChannels();
     expect(enabled.length).toBe(2);
     expect(enabled.map((c) => c.id).sort()).toEqual(["C001", "C003"]);
@@ -69,9 +69,9 @@ describe("PostgresStore", () => {
   it("should insert and retrieve messages in descending order", async () => {
     const now = new Date();
     const msgs = [
-      { slackTs: "1.000", channelId: "C001", userId: "U1", userName: "alice", text: "first", timestamp: new Date(now.getTime() - 3000).toISOString() },
-      { slackTs: "2.000", channelId: "C001", userId: "U2", userName: "bob", text: "second", timestamp: new Date(now.getTime() - 2000).toISOString() },
-      { slackTs: "3.000", channelId: "C001", userId: "U1", userName: "alice", text: "third", timestamp: new Date(now.getTime() - 1000).toISOString() },
+      { slackTs: "1.000", channelId: "C001", userId: "U1", userName: "alice", text: "first", timestamp: new Date(now.getTime() - 3000).toISOString(), metadata: {} as Record<string, unknown> },
+      { slackTs: "2.000", channelId: "C001", userId: "U2", userName: "bob", text: "second", timestamp: new Date(now.getTime() - 2000).toISOString(), metadata: {} as Record<string, unknown> },
+      { slackTs: "3.000", channelId: "C001", userId: "U1", userName: "alice", text: "third", timestamp: new Date(now.getTime() - 1000).toISOString(), metadata: {} as Record<string, unknown> },
     ];
     for (const m of msgs) await store.upsertMessage(m);
 
@@ -83,7 +83,7 @@ describe("PostgresStore", () => {
   });
 
   it("should deduplicate and update messages on conflict", async () => {
-    await store.upsertMessage({ slackTs: "1.000", channelId: "C001", userId: "U1", userName: "alice", text: "edited text", timestamp: new Date().toISOString() });
+    await store.upsertMessage({ slackTs: "1.000", channelId: "C001", userId: "U1", userName: "alice", text: "edited text", timestamp: new Date().toISOString(), metadata: {} as Record<string, unknown> });
     const got = await store.getMessages("C001", 10, 0);
     const updated = got.find((m) => m.slackTs === "1.000");
     expect(updated).not.toBeUndefined();
@@ -103,7 +103,7 @@ describe("PostgresStore", () => {
   });
 
   it("should persist webhookUrl and autoApproveUsers on channel", async () => {
-    await store.upsertChannel({ id: "C010", name: "webhook-test", teamId: "T001", enabled: true, webhookUrl: "https://hooks.example.com/feed", autoApproveUsers: ["U100", "U200"], createdAt: "" });
+    await store.upsertChannel({ id: "C010", name: "webhook-test", teamId: "T001", enabled: true, webhookUrl: "https://hooks.example.com/feed", autoApproveUsers: ["U100", "U200"], approvedPosters: [], trackReplies: false, metadataSchema: "", createdAt: "" });
     const ch = await store.getChannel("C010");
     expect(ch!.webhookUrl).toBe("https://hooks.example.com/feed");
     expect(ch!.autoApproveUsers).toEqual(["U100", "U200"]);

@@ -8,6 +8,7 @@ export const channels = pgTable("channels", {
   webhookUrl: text("webhook_url").notNull().default(""),
   autoApproveUsers: text("auto_approve_users").notNull().default(""),
   approvedPosters: text("approved_posters").notNull().default(""),
+  trackReplies: integer("track_replies").notNull().default(0),
   metadataSchema: text("metadata_schema").notNull().default(""),
   createdAt: text("created_at").notNull().default("now()"),
 });
@@ -21,6 +22,7 @@ export const messages = pgTable(
     userId: text("user_id").notNull().default(""),
     userName: text("user_name").notNull().default(""),
     text: text("text").notNull().default(""),
+    threadTs: text("thread_ts"),
     timestamp: text("timestamp").notNull(),
     metadata: jsonb("metadata").notNull().default("{}"),
   },
