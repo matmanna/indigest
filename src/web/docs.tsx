@@ -3,6 +3,7 @@ navEl.innerHTML = `<nav class="navbar">
   <a href="/" class="navbar-brand">indigest</a>
   <div class="navbar-links">
     <a href="/">feed map</a>
+        <a href="/usage.html">usage</a>
     <a href="/docs.html" class="active">api docs</a>
   </div>
 </nav>`;

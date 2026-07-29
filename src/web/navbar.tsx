@@ -6,7 +6,9 @@ export function Navbar({ active }: { active: string }) {
       <a href="/" class="navbar-brand">indigest</a>
       <div class="navbar-links">
         <a href="/" class={active === "map" ? "active" : ""}>Feed Map</a>
-        <a href="/docs.html" class={active === "docs" ? "active" : ""}>API Docs</a>
+        <a href="/docs.html" class={active === "docs" ? "active" : ""}>API</a>
+           <a href="/docs.html" class={active === "docs" ? "active" : ""}>Slack</a>
+
       </div>
     </nav>
   );

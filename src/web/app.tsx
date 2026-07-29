@@ -15,7 +15,7 @@ import "@xyflow/react/dist/style.css";
 
 const TEAM_ID = "T024F7C8B";
 const slackLink = (channelId: string) =>
-  `https://slack.com/app_redirect?channel=${channelId}&team=${TEAM_ID}`;
+  `https://hackclub.enterprise.slack.com/archives/${channelId}`;
 const parseApprovedPosters = (raw: string): string[] => {
   if (!raw) return [];
   try { return JSON.parse(raw); } catch { return []; }
@@ -45,7 +45,9 @@ document.getElementById("navbar")!.innerHTML = `<nav class="navbar">
   <a href="/" class="navbar-brand">indigest</a>
   <div class="navbar-links">
     <a href="/" class="active">feed map</a>
+      <a href="/usage.html">usage</a>
     <a href="/docs.html">api docs</a>
+
   </div>
 </nav>`;
 
@@ -133,6 +135,7 @@ function layoutGraph(rawNodes: GraphNode[], rawEdges: GraphEdge[]): { nodes: Nod
   const colX = [40, 300, 740];
   const rowH = 28;
   const gap = 12;
+  const chSubGap = 100;
 
   let cy = 30;
   channels.forEach((ch) => {
@@ -158,7 +161,7 @@ function layoutGraph(rawNodes: GraphNode[], rawEdges: GraphEdge[]): { nodes: Nod
   let sy = 30;
   subscribers.forEach((sub) => {
     nodes.push({ id: sub.id, type: "subscriber", position: { x: colX[2], y: sy }, data: sub.data });
-    sy += rowH + gap;
+    sy += rowH + chSubGap;
   });
 
   return { nodes, edges };

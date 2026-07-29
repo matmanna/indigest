@@ -11,6 +11,7 @@ export default defineConfig({
       input: {
         main: "index.html",
         docs: "docs.html",
+        usage: "usage.html"
       },
     },
   },

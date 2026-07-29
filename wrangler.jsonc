@@ -7,18 +7,19 @@
   "observability": {
     "enabled": true
   },
-  "assets": {
-    "directory": "./dist",
-    "not_found_handling": "none",
-    "run_worker_first": [
-      "/api/*",
-      "/feed/*",
-      "/events",
-      "/interactions",
-      "/slack",
-      "/spec.json"
-    ]
-  },
+    "assets": {
+      "directory": "./dist",
+      "not_found_handling": "none",
+      "run_worker_first": [
+        "/api/*",
+        "/feed/*",
+        "/events",
+        "/interactions",
+        "/slack",
+        "/slack/",
+        "/spec.json"
+      ]
+    },
   "vars": {
     "API_USERNAME": "admin",
     "LOCKDOWN_USERS": "U07VA44DNBA,U09Q8MLTE58,U07EB2Y76DP",

@@ -1252,7 +1252,7 @@ app.post("/interactions", async (c) => {
 });
 
 // === Slash Commands ===
-app.post("/slack", async (c) => {
+const slackSlashCommand = async (c: any) => {
   const env = c.env;
   const body = await c.req.text();
   const form = new URLSearchParams(body);
@@ -1782,7 +1782,10 @@ console.log(`Slash command: user=${userId} channel=${targetChannelId} cmd=${cmd}
     }
   }
   })());
-});
+};
+
+app.post("/slack", slackSlashCommand);
+app.post("/slack/", slackSlashCommand);
 
 // === RSS Feed / JSON API ===
 app.get("/feed/:channelId", async (c) => {
