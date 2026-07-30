@@ -12,6 +12,7 @@ import {
   type Edge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import "./lockdown";
 
 const TEAM_ID = "T024F7C8B";
 const slackLink = (channelId: string) =>

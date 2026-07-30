@@ -1,3 +1,5 @@
+import "./lockdown";
+
 const navEl = document.getElementById("navbar")!;
 navEl.innerHTML = `<nav class="navbar">
   <a href="/" class="navbar-brand">indigest</a>

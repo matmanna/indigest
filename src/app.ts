@@ -189,8 +189,15 @@ async function forwardToSubscribers(
     return;
   }
 
-  const slackTsClean = msg.slackTs.replace(".", "");
-  const permalink = `https://slack.com/archives/${msg.channelId}/p${slackTsClean}`;
+  let permalink = "";
+  try {
+    const r = await slack.chat.getPermalink({ channel: msg.channelId, message_ts: msg.slackTs });
+    permalink = (r as any)?.permalink || "";
+  } catch {}
+  if (!permalink) {
+    const slackTsClean = msg.slackTs.replace(".", "");
+    permalink = `https://slack.com/archives/${msg.channelId}/p${slackTsClean}`;
+  }
   const msgDate = new Date(msg.timestamp);
   const dateStr = `${msgDate.getFullYear()}-${msgDate.getMonth() + 1}-${msgDate.getDate()}`;
 
@@ -216,8 +223,7 @@ async function forwardToSubscribers(
       continue;
     }
 
-    // Get the link to forward — from text if permalink, or from metadata, or construct from message ts
-    // Get the link to forward — from text if permalink, from attachments, or from metadata
+    // Get the link to forward — from text if permalink, from metadata, or fallback to computed permalink
     let forwardLink = "";
     let originalAuthorName = "";
     let originalAuthorAvatar = "";
@@ -234,19 +240,14 @@ async function forwardToSubscribers(
         if (meta?.slack_permalink) forwardLink = meta.slack_permalink;
       } catch {}
     }
-    // For empty messages, try to fetch the original via the message's own permalink
-    // This handles Slack "forward message" without additional text
-    if (!forwardLink && isMessageEmpty(msg.text)) {
-      const slackTsClean = msg.slackTs.replace(".", "");
-      const selfPermalink = `https://hackclub.slack.com/archives/${msg.channelId}/p${slackTsClean}`;
-      // Check if this message has attachments (Slack forwards often include them)
-      // We can't access ev.attachments here since we only have the stored msg
-      // Use the self permalink as fallback
-      forwardLink = selfPermalink;
-    }
+    if (!forwardLink) forwardLink = permalink;
 
-    // If we have a Slack permalink, try to fetch the original message details
-    if (forwardLink && forwardLink.includes("slack.com/archives/")) {
+    // Link mode: don't fetch/repost the original text
+    if (sourceChannel.linkMode) {
+      originalText = "";
+    }
+    // If we have a Slack permalink and we're not in link mode, try to fetch the original message details
+    if (!sourceChannel.linkMode && forwardLink && forwardLink.includes("slack.com/archives/")) {
       const permalinkMatch = forwardLink.match(/\/archives\/([A-Z0-9]+)\/p(\d+)/);
       if (permalinkMatch) {
         const origChannel = permalinkMatch[1];
@@ -290,10 +291,31 @@ async function forwardToSubscribers(
     }
     const contextElements = [{ type: "mrkdwn", text: footerText }];
 
-    // Suppress unfurl for direct messages and empty forwards (content shown inline)
-    const suppressUnfurl = !forwardLink || (Boolean(forwardLink) && isMessageEmpty(msg.text));
+    // Suppress unfurl for direct messages and empty forwards (content shown inline), unless link mode
+    const suppressUnfurl = sourceChannel.linkMode ? false : (!forwardLink || (Boolean(forwardLink) && isMessageEmpty(msg.text)));
 
     try {
+      if (sourceChannel.linkMode) {
+        // NOTE: Slack unfurls only on raw URLs, not `<url|text>` mrkdwn links.
+        // So we include the raw permalink in the forwarded footer-style message.
+        const footerOnly = forwardLink
+          ? `📰 Forwarded from <#${msg.channelId}|${sourceChannel.name}> — ${forwardLink}`
+          : `📰 Forwarded from <#${msg.channelId}|${sourceChannel.name}>`;
+        await slack.chat.postMessage({
+          channel: sub.subscriberChannelId,
+          username: postUsername,
+          icon_url: postIcon,
+          unfurl_links: true,
+          unfurl_media: true,
+          text: footerOnly,
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: footerOnly } },
+            { type: "context", elements: contextElements },
+          ],
+        } as any);
+        continue;
+      }
+
       await slack.chat.postMessage({
         channel: sub.subscriberChannelId,
         username: postUsername,
@@ -334,6 +356,30 @@ async function forwardToSubscribers(
 // --- Hono App ---
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Public site configuration used by the static frontend.
+app.get("/site-config", async (c) => {
+  const env = c.env;
+  const ids = (env.LOCKDOWN_USERS || "").split(",").map((id) => id.trim()).filter(Boolean);
+  if (ids.length === 0) return c.json({ lockdownUsers: [] });
+
+  const slack = new WebClient(env.SLACK_BOT_TOKEN);
+  const lockdownUsers = await Promise.all(ids.map(async (id) => {
+    let name = id;
+    try {
+      const response = await slack.users.info({ user: id });
+      const user = response.user as any;
+      name = user?.profile?.display_name || user?.name || user?.real_name || id;
+    } catch {}
+    return {
+      id,
+      name,
+      url: `https://hackclub.enterprise.slack.com/team/${id}`,
+    };
+  }));
+
+  return c.json({ lockdownUsers });
+});
 
 // Middleware: Basic Auth for /api routes
 app.use("/api/*", async (c, next) => {
@@ -402,7 +448,7 @@ app.get("/spec.json", (c) => {
           operationId: "listMessages",
           summary: "List messages",
           description: "List messages for a channel with filtering and pagination",
-          tags: ["API"],
+          tags: ["Messages"],
           security: [{ basicAuth: [] }],
           parameters: [
             {
@@ -561,114 +607,6 @@ app.get("/spec.json", (c) => {
             },
             "404": {
               description: "Channel not found",
-            },
-          },
-        },
-      },
-      "/slack": {
-        post: {
-          operationId: "slackCommand",
-          summary: "Slack slash command",
-          description: `Slash commands for managing indigest channels. Run these in Slack as \`/in <command>\`.
-
-**Channel Management:**
-- \`/in pub\` — Enable indigest for this channel. New messages get a Yep!/No prompt.
-- \`/in pub #channel\` — Enable for a specific channel.
-- \`/in pub link\` — Toggle link mode: approved messages get an unfurlable permalink reply. (\`/in pub link off\` disables.)
-- \`/in unpub\` — Disable indigest for this channel.
-- \`/in unpub #channel\` — Disable for a specific channel.
-
-**Auto-Approve:**
-- \`/in pub auto\` — Auto-approve all users' messages in this channel.
-- \`/in pub auto @user\` — Auto-approve for a specific user.
-- \`/in unpub auto\` — Disable auto-approve for all users.
-- \`/in unpub auto @user\` — Disable auto-approve for a specific user.
-- \`/in auto list\` — List users with auto-approve.
-
-**Manual Mode:**
-- \`/in pub manual\` — Every message gets a manual Yep!/No prompt.
-
-**Thread Replies:**
-- \`/in pub replies\` — Track thread replies and store reply relationships.
-
-**Subscriptions:**
-- \`/in sub #channel\` — Subscribe this channel to receive messages from #channel.
-- \`/in unsub #channel\` — Unsubscribe from a channel.
-
-**Webhooks:**
-- \`/in webhook <url>\` — Set a webhook URL for new messages.
-- \`/in webhook clear\` — Remove the webhook.
-
-**Poster Permissions:**
-- \`/in perms @user1 @user2\` — Restrict approvals to these specific users.
-- \`/in perms poster\` — Let each message's author approve their own.
-- \`/in perms @user1 poster\` — Combine specific users + poster mode.
-- \`/in perms get\` — View current poster permissions.
-- \`/in perms clear\` — Restore defaults (poster + managers only).
-
-**Metadata Schema:**
-- \`/in schema set <json>\` — Set a metadata schema for the channel.
-- \`/in schema get\` — View the current schema.
-- \`/in schema clear\` — Remove the schema.
-
-**Status:**
-- \`/in status\` — Show channel status, feeds, and permissions.`,
-          tags: ["Slack"],
-          requestBody: {
-            required: true,
-            content: {
-              "application/x-www-form-urlencoded": {
-                schema: {
-                  type: "object",
-                  required: ["command", "channel_id", "user_id", "text"],
-                  properties: {
-                    command: {
-                      type: "string",
-                      description: "The slash command (e.g. /in)",
-                      example: "/in",
-                    },
-                    channel_id: {
-                      type: "string",
-                      description: "Slack channel ID where the command was invoked",
-                      example: "C01234ABCDE",
-                    },
-                    user_id: {
-                      type: "string",
-                      description: "Slack user ID of the person running the command",
-                      example: "U01234ABCDE",
-                    },
-                    text: {
-                      type: "string",
-                      description: "The command arguments after /in (e.g. pub auto, sub #channel, status)",
-                      example: "pub auto",
-                    },
-                    response_url: {
-                      type: "string",
-                      description: "Slack response URL for deferred responses",
-                    },
-                    trigger_id: {
-                      type: "string",
-                      description: "Slack trigger ID for opening modals",
-                    },
-                  },
-                },
-              },
-            },
-          },
-          responses: {
-            "200": {
-              description: "Acknowledgment. Final result is posted back via response_url.",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      response_type: { type: "string", example: "ephemeral" },
-                      text: { type: "string", example: "Processing..." },
-                    },
-                  },
-                },
-              },
             },
           },
         },

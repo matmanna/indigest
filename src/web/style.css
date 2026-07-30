@@ -95,6 +95,23 @@ body {
   color: var(--text);
 }
 
+/* Lockdown banner */
+.lockdown-banner {
+  padding: 0.5rem 1rem;
+  background: #2a1f08;
+  border-bottom: 1px solid #6a4d12;
+  color: #e6c46a;
+  line-height: 1.5;
+  text-align: center;
+}
+.lockdown-banner a {
+  color: #f0d98b;
+  text-decoration: underline;
+}
+.lockdown-banner a:hover {
+  color: #fff1bf;
+}
+
 /* Diagram page */
 .diagram-page {
   height: calc(100vh - 33px);

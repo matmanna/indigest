@@ -1,6 +1,7 @@
 import Markdown from 'react-markdown'
 import {createRoot} from 'react-dom/client'
 import remarkGfm from 'remark-gfm'
+import './lockdown'
 
 const markdown = `# Slack Usage
 
@@ -14,7 +15,7 @@ Slash commands for managing indigest channels. Run these in Slack like:
 
 - \`/in pub\` — Enable indigest for this channel. New messages get a Yep!/No prompt.
 - \`/in pub #channel\` — Enable for a specific channel.
-- \`/in pub link\` — Toggle link mode: approved messages get an unfurlable permalink reply. (\`/in pub link off\` disables.)
+- \`/in pub link\` — Toggle link mode: approved messages get an unfurlable permalink reply, and subscriber channels get a “Forwarded from …” footer with an unfurlable link. (\`/in pub link off\` disables.)
 - \`/in unpub\` — Disable indigest for this channel.
 - \`/in unpub #channel\` — Disable for a specific channel.
 
