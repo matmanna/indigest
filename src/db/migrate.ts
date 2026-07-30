@@ -12,6 +12,7 @@ export async function pushSchema(connectionString: string) {
       name TEXT NOT NULL DEFAULT '',
       team_id TEXT NOT NULL DEFAULT '',
       enabled INTEGER NOT NULL DEFAULT 0,
+      link_mode INTEGER NOT NULL DEFAULT 0,
       webhook_url TEXT NOT NULL DEFAULT '',
       auto_approve_users TEXT NOT NULL DEFAULT '',
       approved_posters TEXT NOT NULL DEFAULT '',
@@ -45,6 +46,7 @@ export async function pushSchema(connectionString: string) {
 
   // Add columns if they don't exist (for existing DBs) — each in try/catch so one failure doesn't block others
   const alters: Array<[string, any]> = [
+    ["link_mode", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS link_mode INTEGER NOT NULL DEFAULT 0`],
     ["auto_approve_users", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS auto_approve_users TEXT NOT NULL DEFAULT ''`],
     ["approved_posters", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS approved_posters TEXT NOT NULL DEFAULT ''`],
     ["track_replies", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS track_replies INTEGER NOT NULL DEFAULT 0`],

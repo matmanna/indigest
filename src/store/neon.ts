@@ -20,6 +20,7 @@ export class NeonStore implements Store {
       name: r.name,
       teamId: r.team_id,
       enabled: Boolean(r.enabled),
+      linkMode: Boolean(r.link_mode),
       webhookUrl: r.webhook_url,
       autoApproveUsers: r.auto_approve_users ? r.auto_approve_users.split(",").filter(Boolean) : [],
       approvedPosters: r.approved_posters ? r.approved_posters.split(",").filter(Boolean) : [],
@@ -30,9 +31,25 @@ export class NeonStore implements Store {
   }
 
   async upsertChannel(ch: StoreChannel): Promise<void> {
-    await this.sql`INSERT INTO channels (id, name, team_id, enabled, webhook_url, auto_approve_users, approved_posters, track_replies, metadata_schema, created_at)
-      VALUES (${ch.id}, ${ch.name}, ${ch.teamId}, ${ch.enabled ? 1 : 0}, ${ch.webhookUrl}, ${ch.autoApproveUsers.join(",")}, ${ch.approvedPosters.join(",")}, ${ch.trackReplies ? 1 : 0}, ${ch.metadataSchema}, ${new Date().toISOString()})
-      ON CONFLICT (id) DO UPDATE SET name = ${ch.name}, team_id = ${ch.teamId}, enabled = ${ch.enabled ? 1 : 0}, webhook_url = ${ch.webhookUrl}, auto_approve_users = ${ch.autoApproveUsers.join(",")}, approved_posters = ${ch.approvedPosters.join(",")}, track_replies = ${ch.trackReplies ? 1 : 0}, metadata_schema = ${ch.metadataSchema}`;
+    await this.sql`INSERT INTO channels (id, name, team_id, enabled, link_mode, webhook_url, auto_approve_users, approved_posters, track_replies, metadata_schema, created_at)
+      VALUES (${ch.id}, ${ch.name}, ${ch.teamId}, ${ch.enabled ? 1 : 0}, ${ch.linkMode ? 1 : 0}, ${ch.webhookUrl}, ${ch.autoApproveUsers.join(",")}, ${ch.approvedPosters.join(",")}, ${ch.trackReplies ? 1 : 0}, ${ch.metadataSchema}, ${new Date().toISOString()})
+      ON CONFLICT (id) DO UPDATE SET name = ${ch.name}, team_id = ${ch.teamId}, enabled = ${ch.enabled ? 1 : 0}, link_mode = ${ch.linkMode ? 1 : 0}, webhook_url = ${ch.webhookUrl}, auto_approve_users = ${ch.autoApproveUsers.join(",")}, approved_posters = ${ch.approvedPosters.join(",")}, track_replies = ${ch.trackReplies ? 1 : 0}, metadata_schema = ${ch.metadataSchema}`;
+  }
+
+  async listChannels(): Promise<StoreChannel[]> {
+    return rows(await this.sql`SELECT * FROM channels`).map((r) => ({
+      id: r.id,
+      name: r.name,
+      teamId: r.team_id,
+      enabled: Boolean(r.enabled),
+      linkMode: Boolean(r.link_mode),
+      webhookUrl: r.webhook_url,
+      autoApproveUsers: r.auto_approve_users ? r.auto_approve_users.split(",").filter(Boolean) : [],
+      approvedPosters: r.approved_posters ? r.approved_posters.split(",").filter(Boolean) : [],
+      trackReplies: Boolean(r.track_replies),
+      metadataSchema: r.metadata_schema,
+      createdAt: r.created_at,
+    }));
   }
 
   async listEnabledChannels(): Promise<StoreChannel[]> {
@@ -41,6 +58,7 @@ export class NeonStore implements Store {
       name: r.name,
       teamId: r.team_id,
       enabled: true,
+      linkMode: Boolean(r.link_mode),
       webhookUrl: r.webhook_url,
       autoApproveUsers: r.auto_approve_users ? r.auto_approve_users.split(",").filter(Boolean) : [],
       approvedPosters: r.approved_posters ? r.approved_posters.split(",").filter(Boolean) : [],

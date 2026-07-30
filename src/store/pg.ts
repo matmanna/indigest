@@ -17,7 +17,7 @@ export class PostgresStore implements Store {
     const rows = await this.db.select().from(schema.channels).where(eq(schema.channels.id, id)).limit(1);
     if (rows.length === 0) return null;
     const r = rows[0]!;
-    return { id: r.id, name: r.name, teamId: r.teamId, enabled: Boolean(r.enabled), webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt };
+    return { id: r.id, name: r.name, teamId: r.teamId, enabled: Boolean(r.enabled), linkMode: Boolean(r.linkMode), webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt };
   }
 
   async upsertChannel(ch: StoreChannel): Promise<void> {
@@ -28,6 +28,7 @@ export class PostgresStore implements Store {
         name: ch.name,
         teamId: ch.teamId,
         enabled: ch.enabled ? 1 : 0,
+        linkMode: ch.linkMode ? 1 : 0,
         webhookUrl: ch.webhookUrl,
         autoApproveUsers: ch.autoApproveUsers.join(","),
         approvedPosters: ch.approvedPosters.join(","),
@@ -41,6 +42,7 @@ export class PostgresStore implements Store {
           name: ch.name,
           teamId: ch.teamId,
           enabled: ch.enabled ? 1 : 0,
+          linkMode: ch.linkMode ? 1 : 0,
           webhookUrl: ch.webhookUrl,
           autoApproveUsers: ch.autoApproveUsers.join(","),
           approvedPosters: ch.approvedPosters.join(","),
@@ -50,9 +52,26 @@ export class PostgresStore implements Store {
       });
   }
 
+  async listChannels(): Promise<StoreChannel[]> {
+    const rows = await this.db.select().from(schema.channels);
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      teamId: r.teamId,
+      enabled: Boolean(r.enabled),
+      linkMode: Boolean(r.linkMode),
+      webhookUrl: r.webhookUrl,
+      autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [],
+      approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [],
+      trackReplies: Boolean(r.trackReplies),
+      metadataSchema: r.metadataSchema,
+      createdAt: r.createdAt,
+    }));
+  }
+
   async listEnabledChannels(): Promise<StoreChannel[]> {
     const rows = await this.db.select().from(schema.channels).where(eq(schema.channels.enabled, 1));
-    return rows.map((r) => ({ id: r.id, name: r.name, teamId: r.teamId, enabled: true, webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt }));
+    return rows.map((r) => ({ id: r.id, name: r.name, teamId: r.teamId, enabled: true, linkMode: Boolean(r.linkMode), webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt }));
   }
 
   async upsertMessage(msg: StoreMessage): Promise<void> {

@@ -55,6 +55,21 @@ async function slackResponse(responseUrl: string, text: string) {
   } catch {}
 }
 
+async function postPermalinkReply(slack: WebClient, channelId: string, messageTs: string): Promise<void> {
+  try {
+    const permalink = await slack.chat.getPermalink({ channel: channelId, message_ts: messageTs });
+    const url = (permalink as any)?.permalink || "";
+    if (!url) return;
+    await slack.chat.postMessage({
+      channel: channelId,
+      thread_ts: messageTs,
+      text: url,
+      unfurl_links: true,
+      unfurl_media: true,
+    } as any);
+  } catch {}
+}
+
 async function fireWebhook(ch: StoreChannel, msg: StoreMessage) {
   if (!ch.webhookUrl) return;
   try {
@@ -487,6 +502,69 @@ app.get("/spec.json", (c) => {
           },
         },
       },
+      "/api/channels": {
+        get: {
+          operationId: "listChannels",
+          summary: "List channels",
+          description: "List all channels known to indigest (enabled and disabled).",
+          tags: ["Channels"],
+          security: [{ basicAuth: [] }],
+          responses: {
+            "200": {
+              description: "All channels",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      data: {
+                        type: "array",
+                        items: { $ref: "#/components/schemas/Channel" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/api/channels/{id}": {
+        get: {
+          operationId: "getChannel",
+          summary: "Get channel",
+          description: "Get a single channel by Slack channel ID.",
+          tags: ["Channels"],
+          security: [{ basicAuth: [] }],
+          parameters: [
+            {
+              name: "id",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+              description: "Slack channel ID",
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Single channel",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/Channel" },
+                    },
+                  },
+                },
+              },
+            },
+            "404": {
+              description: "Channel not found",
+            },
+          },
+        },
+      },
       "/slack": {
         post: {
           operationId: "slackCommand",
@@ -496,6 +574,7 @@ app.get("/spec.json", (c) => {
 **Channel Management:**
 - \`/in pub\` — Enable indigest for this channel. New messages get a Yep!/No prompt.
 - \`/in pub #channel\` — Enable for a specific channel.
+- \`/in pub link\` — Toggle link mode: approved messages get an unfurlable permalink reply. (\`/in pub link off\` disables.)
 - \`/in unpub\` — Disable indigest for this channel.
 - \`/in unpub #channel\` — Disable for a specific channel.
 
@@ -603,6 +682,22 @@ app.get("/spec.json", (c) => {
         },
       },
       schemas: {
+        Channel: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            name: { type: "string" },
+            teamId: { type: "string" },
+            enabled: { type: "boolean" },
+            linkMode: { type: "boolean" },
+            webhookUrl: { type: "string" },
+            autoApproveUsers: { type: "array", items: { type: "string" } },
+            approvedPosters: { type: "array", items: { type: "string" } },
+            trackReplies: { type: "boolean" },
+            metadataSchema: { type: "string" },
+            createdAt: { type: "string" },
+          },
+        },
         Message: {
           type: "object",
           properties: {
@@ -661,6 +756,7 @@ app.post("/events", async (c) => {
         name: "",
         teamId: auth.team_id || "",
         enabled: false,
+        linkMode: false,
         webhookUrl: "",
         autoApproveUsers: [],
         approvedPosters: [],
@@ -729,6 +825,7 @@ app.post("/events", async (c) => {
           metadata,
         });
         await forwardToSubscribers({ slackTs: ev.ts, channelId: ev.channel, userId: ev.user, userName, text: ev.text, timestamp: slackTsToTime(ev.ts).toISOString(), metadata }, ch, store, slack);
+        if (ch.linkMode) await postPermalinkReply(slack, ev.channel, ev.ts);
 
         // If channel has a metadata schema, prompt the user to add metadata
         if (ch.metadataSchema) {
@@ -962,6 +1059,7 @@ app.post("/interactions", async (c) => {
         metadata,
       });
       await forwardToSubscribers({ slackTs: messageTs, channelId, userId: msg.user || "", userName, text: msg.text || "", timestamp: slackTsToTime(messageTs).toISOString(), metadata }, channel, store, slack);
+      if (channel.linkMode) await postPermalinkReply(client, channelId, messageTs);
 
       // Update the bot's prompt to show approved state
       if (botMessageTs) {
@@ -1172,6 +1270,7 @@ app.post("/interactions", async (c) => {
       const savedMsg = { slackTs: messageTs, channelId, userId: msg.user || "", userName, text: msg.text || "", timestamp: slackTsToTime(messageTs).toISOString(), metadata: {} };
       await fireWebhook(ch, savedMsg);
       await forwardToSubscribers(savedMsg, ch, store, slack);
+      if (ch.linkMode) await postPermalinkReply(slack, channelId, messageTs);
 
       // Update the bot's prompt to show approved state
       if (botMessageTs) {
@@ -1317,7 +1416,7 @@ const slackSlashCommand = async (c: any) => {
       name = (conv.channel as any)?.name || targetChannelId;
     } catch {}
     const auth = await slack.auth.test();
-    ch = { id: targetChannelId, name, teamId: auth.team_id || "", enabled: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], trackReplies: false, metadataSchema: "", createdAt: "" };
+    ch = { id: targetChannelId, name, teamId: auth.team_id || "", enabled: false, linkMode: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], trackReplies: false, metadataSchema: "", createdAt: "" };
     await store.upsertChannel(ch);
   }
 
@@ -1373,6 +1472,24 @@ console.log(`Slash command: user=${userId} channel=${targetChannelId} cmd=${cmd}
         return;
       }
 
+      if (subcmd === "link") {
+        if (!(await targetManager())) {
+          await respond("Only the channel creator can enable link mode.");
+          return;
+        }
+        ch.enabled = true;
+        const wantsOff = ["off", "disable", "disabled", "0", "false"].includes((arg || "").trim().toLowerCase());
+        ch.linkMode = !wantsOff;
+        await store.upsertChannel(ch);
+        const label = targetChannelId === sourceChannelId ? "this channel" : `#${ch.name}`;
+        if (ch.linkMode) {
+          await respond(`🔗 Link mode enabled for ${label}. Approved messages will get an unfurlable permalink reply.\nRSS: ${baseUrl}/feed/${targetChannelId}\nJSON: ${baseUrl}/feed/${targetChannelId}.json`);
+        } else {
+          await respond(`🔗 Link mode disabled for ${label}.`);
+        }
+        return;
+      }
+
       if (subcmd === "manual") {
         if (!(await targetManager())) {
           await respond("Only the channel creator can enable manual mode.");
@@ -1404,7 +1521,7 @@ console.log(`Slash command: user=${userId} channel=${targetChannelId} cmd=${cmd}
       }
 
       if (subcmd) {
-        await respond("Usage: \`/in pub\` | \`/in pub #channel\` | \`/in pub auto @user\` | \`/in pub manual\` | \`/in pub replies\`");
+        await respond("Usage: \`/in pub\` | \`/in pub #channel\` | \`/in pub auto @user\` | \`/in pub manual\` | \`/in pub link\` | \`/in pub replies\`");
         return;
       }
       if (!(await targetManager())) {
@@ -1587,6 +1704,7 @@ console.log(`Slash command: user=${userId} channel=${targetChannelId} cmd=${cmd}
 
       if (ch.enabled) {
         let msg = `📰 indigest pub'd for ${chName}\nRSS: ${baseUrl}/feed/${targetChannelId}\nJSON: ${baseUrl}/feed/${targetChannelId}.json`;
+        if (ch.linkMode) msg += `\nMode: link`;
         if (ch.webhookUrl) msg += `\nWebhook: ${ch.webhookUrl}`;
         if (ch.autoApproveUsers.length > 0) {
           const autoLabel = ch.autoApproveUsers.includes("*") ? "all users" : ch.autoApproveUsers.map((id) => `<@${id}>`).join(", ");
@@ -1889,6 +2007,22 @@ app.get("/api/messages/:slackTs", async (c) => {
   return c.json({ data: msg });
 });
 
+app.get("/api/channels", async (c) => {
+  const env = c.env;
+  const store = await getStore(env.DATABASE_URL);
+  const channels = await store.listChannels();
+  return c.json({ data: channels });
+});
+
+app.get("/api/channels/:id", async (c) => {
+  const env = c.env;
+  const store = await getStore(env.DATABASE_URL);
+  const id = decodeURIComponent(c.req.param("id"));
+  const ch = await store.getChannel(id);
+  if (!ch) return c.json({ error: "channel not found" }, 404);
+  return c.json({ data: ch });
+});
+
 // --- Graph API (for React Flow diagram) ---
 app.get("/api/graph", async (c) => {
   const env = c.env;
@@ -1899,7 +2033,7 @@ app.get("/api/graph", async (c) => {
   const edges: Array<{ id: string; source: string; target: string; label?: string; animated: boolean }> = [];
 
   for (const ch of channels) {
-    nodes.push({ id: `ch:${ch.id}`, type: "channel", label: `#${ch.name || ch.id}`, data: { channelId: ch.id, name: ch.name, webhookUrl: ch.webhookUrl, metadataSchema: ch.metadataSchema, trackReplies: ch.trackReplies, approvedPosters: ch.approvedPosters, autoApproveUsers: ch.autoApproveUsers?.join(", ") || "", enabled: ch.enabled, createdAt: ch.createdAt } });
+    nodes.push({ id: `ch:${ch.id}`, type: "channel", label: `#${ch.name || ch.id}`, data: { channelId: ch.id, name: ch.name, webhookUrl: ch.webhookUrl, metadataSchema: ch.metadataSchema, trackReplies: ch.trackReplies, approvedPosters: ch.approvedPosters, autoApproveUsers: ch.autoApproveUsers?.join(", ") || "", enabled: ch.enabled, linkMode: ch.linkMode, createdAt: ch.createdAt } });
     nodes.push({ id: `rss:${ch.id}`, type: "feed", label: "RSS Feed", data: { feedType: "rss", channelId: ch.id } });
     edges.push({ id: `e-rss-${ch.id}`, source: `ch:${ch.id}`, target: `rss:${ch.id}`, animated: true });
     nodes.push({ id: `api:${ch.id}`, type: "feed", label: "API Feed", data: { feedType: "api", channelId: ch.id } });
@@ -1913,7 +2047,7 @@ app.get("/api/graph", async (c) => {
       const subCh = await store.getChannel(sub.subscriberChannelId);
       const subLabel = subCh ? `#${subCh.name || subCh.id}` : sub.subscriberChannelId;
       if (!nodes.find((n) => n.id === `sub:${sub.subscriberChannelId}`)) {
-        nodes.push({ id: `sub:${sub.subscriberChannelId}`, type: "subscriber", label: subLabel, data: { channelId: sub.subscriberChannelId, name: subCh?.name, webhookUrl: subCh?.webhookUrl, metadataSchema: subCh?.metadataSchema, trackReplies: subCh?.trackReplies, approvedPosters: subCh?.approvedPosters, autoApproveUsers: subCh?.autoApproveUsers?.join(", ") || "", enabled: subCh?.enabled, createdAt: subCh?.createdAt } });
+        nodes.push({ id: `sub:${sub.subscriberChannelId}`, type: "subscriber", label: subLabel, data: { channelId: sub.subscriberChannelId, name: subCh?.name, webhookUrl: subCh?.webhookUrl, metadataSchema: subCh?.metadataSchema, trackReplies: subCh?.trackReplies, approvedPosters: subCh?.approvedPosters, autoApproveUsers: subCh?.autoApproveUsers?.join(", ") || "", enabled: subCh?.enabled, linkMode: subCh?.linkMode, createdAt: subCh?.createdAt } });
       }
       edges.push({ id: `e-sub-${ch.id}-${sub.subscriberChannelId}`, source: `ch:${ch.id}`, target: `sub:${sub.subscriberChannelId}`, label: "[sub]", animated: true });
     }
@@ -1965,6 +2099,7 @@ function retryingStore(store: Store): Store {
   return {
     getChannel: (id) => withRetry(() => store.getChannel(id)),
     upsertChannel: (ch) => withRetry(() => store.upsertChannel(ch)),
+    listChannels: () => withRetry(() => store.listChannels()),
     listEnabledChannels: () => withRetry(() => store.listEnabledChannels()),
     upsertMessage: (msg) => withRetry(() => store.upsertMessage(msg)),
     deleteMessage: (channelId, slackTs) => withRetry(() => store.deleteMessage(channelId, slackTs)),
@@ -1984,13 +2119,14 @@ async function runDdlOnce(databaseUrl: string) {
   const { neon } = await import("@neondatabase/serverless");
   const sql = neon(databaseUrl);
   const stmts = [
-    sql`CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', team_id TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, webhook_url TEXT NOT NULL DEFAULT '', auto_approve_users TEXT NOT NULL DEFAULT '', approved_posters TEXT NOT NULL DEFAULT '', track_replies INTEGER NOT NULL DEFAULT 0, metadata_schema TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (now() at time zone 'utc'))`,
+    sql`CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', team_id TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, link_mode INTEGER NOT NULL DEFAULT 0, webhook_url TEXT NOT NULL DEFAULT '', auto_approve_users TEXT NOT NULL DEFAULT '', approved_posters TEXT NOT NULL DEFAULT '', track_replies INTEGER NOT NULL DEFAULT 0, metadata_schema TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (now() at time zone 'utc'))`,
     sql`CREATE TABLE IF NOT EXISTS messages (id SERIAL PRIMARY KEY, slack_ts TEXT NOT NULL, channel_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '', user_name TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '', thread_ts TEXT, timestamp TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}')`,
     sql`CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, subscriber_channel_id TEXT NOT NULL, source_channel_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (now() at time zone 'utc'))`,
     sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_channel_ts ON messages(channel_id, slack_ts)`,
     sql`CREATE INDEX IF NOT EXISTS idx_messages_channel_ts ON messages(channel_id, timestamp DESC)`,
     sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions ON subscriptions(subscriber_channel_id, source_channel_id)`,
     sql`CREATE INDEX IF NOT EXISTS idx_subscriptions_source ON subscriptions(source_channel_id)`,
+    sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS link_mode INTEGER NOT NULL DEFAULT 0`,
     sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS auto_approve_users TEXT NOT NULL DEFAULT ''`,
     sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS approved_posters TEXT NOT NULL DEFAULT ''`,
     sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS track_replies INTEGER NOT NULL DEFAULT 0`,

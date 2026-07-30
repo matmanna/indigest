@@ -14,6 +14,7 @@ Slash commands for managing indigest channels. Run these in Slack like:
 
 - \`/in pub\` — Enable indigest for this channel. New messages get a Yep!/No prompt.
 - \`/in pub #channel\` — Enable for a specific channel.
+- \`/in pub link\` — Toggle link mode: approved messages get an unfurlable permalink reply. (\`/in pub link off\` disables.)
 - \`/in unpub\` — Disable indigest for this channel.
 - \`/in unpub #channel\` — Disable for a specific channel.
 

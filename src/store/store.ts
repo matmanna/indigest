@@ -3,6 +3,7 @@ export interface StoreChannel {
   name: string;
   teamId: string;
   enabled: boolean;
+  linkMode: boolean;
   webhookUrl: string;
   autoApproveUsers: string[];
   approvedPosters: string[];
@@ -33,6 +34,7 @@ export interface StoreSubscription {
 export interface Store {
   getChannel(id: string): Promise<StoreChannel | null>;
   upsertChannel(ch: StoreChannel): Promise<void>;
+  listChannels(): Promise<StoreChannel[]>;
   listEnabledChannels(): Promise<StoreChannel[]>;
   upsertMessage(msg: StoreMessage): Promise<void>;
   deleteMessage(channelId: string, slackTs: string): Promise<void>;

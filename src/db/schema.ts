@@ -5,6 +5,7 @@ export const channels = pgTable("channels", {
   name: text("name").notNull().default(""),
   teamId: text("team_id").notNull().default(""),
   enabled: integer("enabled").notNull().default(0),
+  linkMode: integer("link_mode").notNull().default(0),
   webhookUrl: text("webhook_url").notNull().default(""),
   autoApproveUsers: text("auto_approve_users").notNull().default(""),
   approvedPosters: text("approved_posters").notNull().default(""),
