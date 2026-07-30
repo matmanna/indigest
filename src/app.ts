@@ -296,21 +296,16 @@ async function forwardToSubscribers(
 
     try {
       if (sourceChannel.linkMode) {
-        // NOTE: Slack unfurls only on raw URLs, not `<url|text>` mrkdwn links.
-        // So we include the raw permalink in the forwarded footer-style message.
-        const footerOnly = forwardLink
-          ? `📰 Forwarded from <#${msg.channelId}|${sourceChannel.name}> — ${forwardLink}`
-          : `📰 Forwarded from <#${msg.channelId}|${sourceChannel.name}>`;
+        // Keep the raw permalink in the top-level text so Slack generates its unfurl.
         await slack.chat.postMessage({
           channel: sub.subscriberChannelId,
           username: postUsername,
           icon_url: postIcon,
           unfurl_links: true,
           unfurl_media: true,
-          text: footerOnly,
+          text: forwardLink || footerText,
           blocks: [
-            { type: "section", text: { type: "mrkdwn", text: footerOnly } },
-            { type: "context", elements: contextElements },
+            { type: "section", text: { type: "mrkdwn", text: footerText } },
           ],
         } as any);
         continue;
@@ -1097,12 +1092,6 @@ app.post("/interactions", async (c) => {
         const savedMsg = { slackTs: messageTs, channelId, userId: msg.user || "", userName, text: msg.text || "", timestamp: slackTsToTime(messageTs).toISOString(), metadata };
         if (ch) await fireWebhook(ch, savedMsg);
         if (ch) await forwardToSubscribers(savedMsg, ch, store, slack);
-
-        await slack.chat.postMessage({
-          channel: channelId,
-          thread_ts: messageTs,
-          text: "✅ Message backfilled and added to the feed!",
-        });
       } catch (err: any) {
         console.error("backfill shortcut error:", err.message);
         await slack.chat.postMessage({ channel: channelId, text: `❌ Error backfilling message: ${err.message}` });

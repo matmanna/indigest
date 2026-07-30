@@ -71,6 +71,7 @@ function ChannelNode({ data }: { data: any }) {
         <div class="node-detail">access: {accessLabel(data.approvedPosters)}</div>
         {posters.length > 0 && <div class="node-detail">approved: {posters.join(", ")}</div>}
         {data.createdAt && <div class="node-detail">created: {fmtDate(data.createdAt)}</div>}
+        {data.linkMode && <div class="node-detail">link mode: {data.linkMode ? "yes" : "no"}</div> }
         {schema && (
           <details class="node-details">
             <summary>metadata schema</summary>
