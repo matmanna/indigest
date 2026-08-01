@@ -705,7 +705,7 @@ app.post("/events", async (c) => {
       } catch {}
     }
 
-    if (ev.type === "message" && !ev.subtype && !ev.bot_id && !ev.thread_ts) {
+    if (ev.type === "message" && !ev.subtype && !ev.thread_ts) {
       const ch = await store.getChannel(ev.channel);
       if (!ch || !ch.enabled) return;
 
