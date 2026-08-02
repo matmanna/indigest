@@ -2,14 +2,14 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { eq, sql, and } from "drizzle-orm";
 import * as schema from "../db/schema";
-import type { Store, StoreChannel, StoreMessage, StoreSubscription } from "./store";
+import type { Store, StoreChannel, StoreMessage, StoreSubscription, StoreBotAction } from "./store";
 
 export class PostgresStore implements Store {
   private db: ReturnType<typeof drizzle>;
   private client: ReturnType<typeof postgres>;
 
   constructor(connectionString: string) {
-    this.client = postgres(connectionString, { prepare: false });
+    this.client = postgres(connectionString, { prepare: false, debug: false, onnotice: () => {} });
     this.db = drizzle(this.client, { schema });
   }
 
@@ -191,6 +191,33 @@ export class PostgresStore implements Store {
       text: r.text,
       timestamp: r.timestamp,
       metadata: typeof r.metadata === "string" ? r.metadata : JSON.stringify(r.metadata || {}),
+    }));
+  }
+
+  async addBotAction(action: StoreBotAction): Promise<void> {
+    await this.db.insert(schema.botActions).values({
+      type: action.type,
+      sourceChannelId: action.sourceChannelId,
+      sourceMessageTs: action.sourceMessageTs,
+      botChannelId: action.botChannelId,
+      botMessageTs: action.botMessageTs,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  async getBotActionsBySource(sourceChannelId: string, sourceMessageTs: string): Promise<StoreBotAction[]> {
+    const rows = await this.db
+      .select()
+      .from(schema.botActions)
+      .where(and(eq(schema.botActions.sourceChannelId, sourceChannelId), eq(schema.botActions.sourceMessageTs, sourceMessageTs)));
+    return rows.map((r) => ({
+      id: r.id,
+      type: r.type,
+      sourceChannelId: r.sourceChannelId,
+      sourceMessageTs: r.sourceMessageTs,
+      botChannelId: r.botChannelId,
+      botMessageTs: r.botMessageTs,
+      createdAt: r.createdAt,
     }));
   }
 }

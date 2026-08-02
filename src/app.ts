@@ -294,36 +294,41 @@ async function forwardToSubscribers(
     // Suppress unfurl for direct messages and empty forwards (content shown inline), unless link mode
     const suppressUnfurl = sourceChannel.linkMode ? false : (!forwardLink || (Boolean(forwardLink) && isMessageEmpty(msg.text)));
 
+    const parsedMetadata = (msg.metadata && msg.metadata != "") ? JSON.parse(msg.metadata) : null;
+    const parsedSchema = sourceChannel.metadataSchema ? JSON.parse(sourceChannel.metadataSchema) : null;
+    const metadataSection = (parsedMetadata && parsedSchema) ? Object.keys(parsedMetadata).map((metaProp) => {
+      const field = parsedSchema.fields?.find((e: any) => e.action_id === metaProp);
+      return `*${field?.label || metaProp}:* ${parsedMetadata[metaProp]}`;
+    }).join("\n") + "\n" : "";
+
+    console.log("metadata:", parsedMetadata, "schema:", sourceChannel.metadataSchema);
+
     try {
       if (sourceChannel.linkMode) {
         // Keep the raw permalink in the top-level text so Slack generates its unfurl.
-        await slack.chat.postMessage({
+        const linkBlocks: any[] = [];
+        if (metadataSection) {
+          linkBlocks.push({ type: "section", text: { type: "mrkdwn", text: metadataSection.trim() } });
+        }
+        linkBlocks.push({ type: "section", text: { type: "mrkdwn", text: footerText } });
+        const res = await slack.chat.postMessage({
           channel: sub.subscriberChannelId,
           username: postUsername,
           icon_url: postIcon,
-          unfurl_links: true,
-          unfurl_media: true,
-          text: forwardLink || footerText,
-          blocks: [
-            { type: "section", text: { type: "mrkdwn", text: footerText } },
-          ],
+          unfurl_links: !metadataSection,
+          unfurl_media: !metadataSection,
+          text: metadataSection
+            ? metadataSection.trim()
+            : (forwardLink || footerText),
+          blocks: linkBlocks,
         } as any);
+        if (res?.ts) {
+          await store.addBotAction({ type: "pub", sourceChannelId: msg.channelId, sourceMessageTs: msg.slackTs, botChannelId: sub.subscriberChannelId, botMessageTs: res.ts, createdAt: "" });
+        }
         continue;
       }
 
-      await slack.chat.postMessage({
-        channel: sub.subscriberChannelId,
-        username: postUsername,
-        icon_url: postIcon,
-        unfurl_links: suppressUnfurl ? false : undefined,
-        unfurl_media: suppressUnfurl ? false : undefined,
-        text: (originalText
-          ? `📰 *${postUsername}* in #${sourceChannel.name}:\n${originalText}`
-          : forwardLink
-            ? `📰 Forwarded from #${sourceChannel.name}\n${forwardLink}`
-            : `📰 *${displayName}* in #${sourceChannel.name}:\n${msg.text}`
-        ).slice(0, 3000),
-        blocks: [
+      const blocks: any[] = [
           {
             type: "section",
             text: {
@@ -336,12 +341,28 @@ async function forwardToSubscribers(
               ).slice(0, 3000),
             },
           },
-          {
-            type: "context",
-            elements: contextElements,
-          },
-        ],
-      });
+        ];
+        if (metadataSection) {
+          blocks.push({ type: "section", text: { type: "mrkdwn", text: metadataSection.trim() } });
+        }
+        blocks.push({ type: "context", elements: contextElements });
+        const res = await slack.chat.postMessage({
+          channel: sub.subscriberChannelId,
+          username: postUsername,
+          icon_url: postIcon,
+          unfurl_links: suppressUnfurl ? false : undefined,
+          unfurl_media: suppressUnfurl ? false : undefined,
+          text: (originalText
+            ? `📰 *${postUsername}* in #${sourceChannel.name}:\n${originalText}`
+            : forwardLink
+              ? `📰 Forwarded from #${sourceChannel.name}\n${forwardLink}`
+              : `📰 *${displayName}* in #${sourceChannel.name}:\n${msg.text}`
+          ).slice(0, 3000),
+          blocks,
+        });
+        if (res?.ts) {
+          await store.addBotAction({ type: "pub", sourceChannelId: msg.channelId, sourceMessageTs: msg.slackTs, botChannelId: sub.subscriberChannelId, botMessageTs: res.ts, createdAt: "" });
+        }
     } catch (err) {
       console.error(`Failed to forward to ${sub.subscriberChannelId}:`, err);
     }
@@ -758,7 +779,7 @@ app.post("/events", async (c) => {
           metadata,
         });
         await forwardToSubscribers({ slackTs: ev.ts, channelId: ev.channel, userId: ev.user, userName, text: ev.text, timestamp: slackTsToTime(ev.ts).toISOString(), metadata }, ch, store, slack);
-        if (ch.linkMode) await postPermalinkReply(slack, ev.channel, ev.ts);
+        // if (ch.linkMode) await postPermalinkReply(slack, ev.channel, ev.ts);
 
         // If channel has a metadata schema, prompt the user to add metadata
         if (ch.metadataSchema) {
@@ -784,7 +805,7 @@ app.post("/events", async (c) => {
                   },
                 ],
               });
-        } catch {}
+            } catch {}
           }
         }
 
@@ -991,6 +1012,47 @@ app.post("/interactions", async (c) => {
         timestamp: slackTsToTime(messageTs).toISOString(),
         metadata,
       });
+
+      // Build metadata section for editing subscriber messages
+      const parsedMetadata = metadata ? JSON.parse(metadata) : null;
+      const parsedSchema = channel.metadataSchema ? JSON.parse(channel.metadataSchema) : null;
+      const metadataSection = (parsedMetadata && parsedSchema) ? Object.keys(parsedMetadata).map((metaProp) => {
+        const field = parsedSchema.fields?.find((e: any) => e.action_id === metaProp);
+        return `*${field?.label || metaProp}:* ${parsedMetadata[metaProp]}`;
+      }).join("\n") : "";
+
+      // Find existing bot actions for this source message and edit them with metadata
+      const botActions = await store.getBotActionsBySource(channelId, messageTs);
+      for (const action of botActions) {
+        if (action.type === "pub" && metadataSection) {
+          try {
+            // Fetch the current bot message to get its blocks
+            const botMsg = await client.conversations.history({ channel: action.botChannelId, latest: action.botMessageTs, limit: 1, inclusive: true });
+            const existingMsg = botMsg.messages?.[0] as any;
+            if (existingMsg?.blocks) {
+              // Insert metadata section before the context block (last block)
+              const blocks = [...existingMsg.blocks];
+              const contextIdx = blocks.findIndex((b: any) => b.type === "context");
+              const metaBlock = { type: "section", text: { type: "mrkdwn", text: metadataSection } };
+              if (contextIdx >= 0) {
+                blocks.splice(contextIdx, 0, metaBlock);
+              } else {
+                blocks.push(metaBlock);
+              }
+              await client.chat.update({
+                channel: action.botChannelId,
+                ts: action.botMessageTs,
+                text: existingMsg.text || "",
+                blocks,
+              } as any);
+            }
+          } catch (err: any) {
+            console.error(`Failed to update bot message ${action.botChannelId}:${action.botMessageTs}:`, err.message);
+          }
+        }
+      }
+
+      // Also forward to any new subscribers that weren't captured in the initial forward
       await forwardToSubscribers({ slackTs: messageTs, channelId, userId: msg.user || "", userName, text: msg.text || "", timestamp: slackTsToTime(messageTs).toISOString(), metadata }, channel, store, slack);
       if (channel.linkMode) await postPermalinkReply(client, channelId, messageTs);
 
@@ -1118,55 +1180,56 @@ app.post("/interactions", async (c) => {
   }
 
   if (action.action_id === "indigest_yes") {
-    // Permission check: lockdown users, channel managers always pass
     const clickingUser = cb.user?.id || "";
-    const lockdownUsers = (env.LOCKDOWN_USERS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
-    const isLockdown = lockdownUsers.includes(clickingUser);
-    const isManager = isLockdown || await isChannelManager(channelId, clickingUser, slack);
 
-    if (!isManager) {
-      // Check if the message exists in the DB
-      const msgs = await store.getMessages(channelId, 100, 0);
-      const originalMsg = msgs.find((m) => m.slackTs === messageTs);
-
-      if (originalMsg) {
-        // Message exists — apply normal permission check
-        if (ch.approvedPosters.length === 0) {
-          if (originalMsg.userId !== clickingUser) {
-            await slackResponse(responseUrl, "❌ Sorry, only the original poster or a channel manager can approve this message.");
-            return;
-          }
-        } else if (ch.approvedPosters.includes("poster")) {
-          if (originalMsg.userId !== clickingUser && !ch.approvedPosters.includes(clickingUser)) {
-            await slackResponse(responseUrl, "❌ Sorry, you can't do that due to the opt-in perms!");
-            return;
-          }
-        } else {
-          if (!ch.approvedPosters.includes(clickingUser)) {
-            await slackResponse(responseUrl, "❌ Sorry, you can't do that due to the opt-in perms!");
-            return;
-          }
-        }
-      } else {
-        // Message not in DB (was deleted via Undo/No) — allow re-approval
-      }
-    }
-
+    // Open modal IMMEDIATELY — trigger_id expires in 3s, can't afford slow checks first
     if (ch.metadataSchema) {
       let schema: any = null;
       try { schema = JSON.parse(ch.metadataSchema); } catch {}
       if (schema && schema.fields?.length > 0) {
         const { openMetadataModal } = await import("./api/modal");
         try {
-        await openMetadataModal(slack, triggerId, channelId, messageTs, schema, cb.container?.message_ts);
-          await slackResponse(responseUrl, "");
-          return;
+          await openMetadataModal(slack, triggerId, channelId, messageTs, schema, cb.container?.message_ts);
         } catch (err: any) {
-          await slackResponse(responseUrl, `Error opening form: ${err.message}`);
+          console.error("openMetadataModal failed:", err.message);
+          if (err.message?.includes("expired_trigger_id")) {
+            await slack.chat.postEphemeral({ channel: channelId, user: clickingUser, text: "⏱️ Form expired — please click Approve again." });
+          } else {
+            await slack.chat.postEphemeral({ channel: channelId, user: clickingUser, text: `❌ Error opening form: ${err.message}` });
+          }
           return;
         }
+
+        // Permission check AFTER modal is open
+        const lockdownUsers = (env.LOCKDOWN_USERS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
+        const isLockdown = lockdownUsers.includes(clickingUser);
+        const isManager = isLockdown || await isChannelManager(channelId, clickingUser, slack);
+        if (!isManager) {
+          const msgs = await store.getMessages(channelId, 100, 0);
+          const originalMsg = msgs.find((m) => m.slackTs === messageTs);
+          if (originalMsg) {
+            let allowed = true;
+            if (ch.approvedPosters.length === 0) {
+              allowed = originalMsg.userId === clickingUser;
+            } else if (ch.approvedPosters.includes("poster")) {
+              allowed = originalMsg.userId === clickingUser || ch.approvedPosters.includes(clickingUser);
+            } else {
+              allowed = ch.approvedPosters.includes(clickingUser);
+            }
+            if (!allowed) {
+              await slack.chat.postEphemeral({ channel: channelId, user: clickingUser, text: "❌ You don't have permission to approve this message." });
+              return;
+            }
+          }
+        }
+        return;
       }
     }
+
+    // No metadata schema — do permission checks first, then approve directly
+    const lockdownUsers = (env.LOCKDOWN_USERS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
+    const isLockdown = lockdownUsers.includes(clickingUser);
+    const isManager = isLockdown || await isChannelManager(channelId, clickingUser, slack);
 
     try {
       const history = await slack.conversations.history({
@@ -2036,6 +2099,8 @@ function retryingStore(store: Store): Store {
     getSubscribersBySource: (sourceChannelId) => withRetry(() => store.getSubscribersBySource(sourceChannelId)),
     getSubscriptionsBySubscriber: (subscriberChannelId) => withRetry(() => store.getSubscriptionsBySubscriber(subscriberChannelId)),
     getRecentMessages: (channelId, since) => withRetry(() => store.getRecentMessages(channelId, since)),
+    addBotAction: (action) => withRetry(() => store.addBotAction(action)),
+    getBotActionsBySource: (sourceChannelId, sourceMessageTs) => withRetry(() => store.getBotActionsBySource(sourceChannelId, sourceMessageTs)),
     close: () => store.close(),
   };
 }

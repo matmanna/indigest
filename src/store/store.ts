@@ -31,6 +31,16 @@ export interface StoreSubscription {
   createdAt: string;
 }
 
+export interface StoreBotAction {
+  id?: number;
+  type: string;
+  sourceChannelId: string;
+  sourceMessageTs: string;
+  botChannelId: string;
+  botMessageTs: string;
+  createdAt: string;
+}
+
 export interface Store {
   getChannel(id: string): Promise<StoreChannel | null>;
   upsertChannel(ch: StoreChannel): Promise<void>;
@@ -44,5 +54,7 @@ export interface Store {
   getSubscribersBySource(sourceChannelId: string): Promise<StoreSubscription[]>;
   getSubscriptionsBySubscriber(subscriberChannelId: string): Promise<StoreSubscription[]>;
   getRecentMessages(channelId: string, since: Date): Promise<StoreMessage[]>;
+  addBotAction(action: StoreBotAction): Promise<void>;
+  getBotActionsBySource(sourceChannelId: string, sourceMessageTs: string): Promise<StoreBotAction[]>;
   close(): void;
 }

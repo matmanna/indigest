@@ -3,7 +3,7 @@ import postgres from "postgres";
 import { sql } from "drizzle-orm";
 
 export async function pushSchema(connectionString: string) {
-  const client = postgres(connectionString, { max: 1 });
+  const client = postgres(connectionString, { max: 1, debug: false, onnotice: () => {} });
   const db = drizzle(client);
 
   await db.execute(sql`
@@ -77,6 +77,22 @@ export async function pushSchema(connectionString: string) {
 
   await db.execute(sql`
     CREATE INDEX IF NOT EXISTS idx_subscriptions_source ON subscriptions(source_channel_id)
+  `);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS bot_actions (
+      id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+      type TEXT NOT NULL,
+      source_channel_id TEXT NOT NULL,
+      source_message_ts TEXT NOT NULL,
+      bot_channel_id TEXT NOT NULL,
+      bot_message_ts TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT now()
+    )
+  `);
+
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_bot_actions_source ON bot_actions(source_channel_id, source_message_ts)
   `);
 
   await client.end();

@@ -1,5 +1,5 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
-import type { Store, StoreChannel, StoreMessage, StoreSubscription } from "./store";
+import type { Store, StoreChannel, StoreMessage, StoreSubscription, StoreBotAction } from "./store";
 
 function rows(result: any): any[] {
   return Array.isArray(result) ? result : result?.rows || [];
@@ -136,6 +136,23 @@ export class NeonStore implements Store {
       text: r.text,
       timestamp: r.timestamp,
       metadata: typeof r.metadata === "string" ? r.metadata : JSON.stringify(r.metadata || {}),
+    }));
+  }
+
+  async addBotAction(action: StoreBotAction): Promise<void> {
+    await this.sql`INSERT INTO bot_actions (type, source_channel_id, source_message_ts, bot_channel_id, bot_message_ts, created_at)
+      VALUES (${action.type}, ${action.sourceChannelId}, ${action.sourceMessageTs}, ${action.botChannelId}, ${action.botMessageTs}, ${new Date().toISOString()})`;
+  }
+
+  async getBotActionsBySource(sourceChannelId: string, sourceMessageTs: string): Promise<StoreBotAction[]> {
+    return rows(await this.sql`SELECT * FROM bot_actions WHERE source_channel_id = ${sourceChannelId} AND source_message_ts = ${sourceMessageTs}`).map((r) => ({
+      id: r.id,
+      type: r.type,
+      sourceChannelId: r.source_channel_id,
+      sourceMessageTs: r.source_message_ts,
+      botChannelId: r.bot_channel_id,
+      botMessageTs: r.bot_message_ts,
+      createdAt: r.created_at,
     }));
   }
 }

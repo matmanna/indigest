@@ -4,12 +4,12 @@ export const channels = pgTable("channels", {
   id: text("id").primaryKey(),
   name: text("name").notNull().default(""),
   teamId: text("team_id").notNull().default(""),
-  enabled: integer("enabled").notNull().default(0),
+  enabled: text("enabled").notNull().default("public"),
   linkMode: integer("link_mode").notNull().default(0),
   webhookUrl: text("webhook_url").notNull().default(""),
   autoApproveUsers: text("auto_approve_users").notNull().default(""),
   approvedPosters: text("approved_posters").notNull().default(""),
-  trackReplies: integer("track_replies").notNull().default(0),
+  trackReplies: text("track_replies").notNull().default("public"),
   metadataSchema: text("metadata_schema").notNull().default(""),
   createdAt: text("created_at").notNull().default("now()"),
 });
@@ -44,5 +44,21 @@ export const subscriptions = pgTable(
   (t) => ({
     uniqueSub: uniqueIndex("uq_subscriptions").on(t.subscriberChannelId, t.sourceChannelId),
     sourceIdx: index("idx_subscriptions_source").on(t.sourceChannelId),
+  }),
+);
+
+export const botActions = pgTable(
+  "bot_actions",
+  {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    type: text("type").notNull(),
+    sourceChannelId: text("source_channel_id").notNull(),
+    sourceMessageTs: text("source_message_ts").notNull(),
+    botChannelId: text("bot_channel_id").notNull(),
+    botMessageTs: text("bot_message_ts").notNull(),
+    createdAt: text("created_at").notNull().default("now()"),
+  },
+  (t) => ({
+    sourceIdx: index("idx_bot_actions_source").on(t.sourceChannelId, t.sourceMessageTs),
   }),
 );
