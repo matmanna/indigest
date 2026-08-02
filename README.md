@@ -12,56 +12,16 @@
 
 ## How it works
 
-1. A workspace admin **installs** the Slack app to the workspace
-2. The bot is added to any channel (any member can invite it)
-3. The **channel creator** runs `/in pub`
-4. Messages get approved manually (buttons) or automatically (auto-approve)
+1. The bot is added to any channel
+2. A channel manager or bot admin runs `/in pub`
+3. Messages get approved manually ('yep'/'nope' buttons) or automatically (auto-approve)
 5. Approved messages are stored in PostgreSQL and served via RSS/JSON/Webhooks
-6. Other channels can **subscribe** to receive forwarded copies of approved messages
+4. If configured, extra metadata can be set through a Slack form modal
+7. Managers of other channels can run `/in sub` to receive forwarded copies of approved messages
 
-## Deploy
+## Map of the network
 
-### Cloudflare Worker (production)
-
-```bash
-npx wrangler login
-npx wrangler secret put SLACK_BOT_TOKEN
-npx wrangler secret put SLACK_SIGNING_SECRET
-npx wrangler secret put DATABASE_URL
-npx wrangler deploy
-```
-
-The Worker auto-detects Neon Postgres from the `DATABASE_URL` and uses the HTTP-based store. Schema is bootstrapped on first request.
-
-Update your Slack app's Event Subscriptions and Interactions URLs to point to the deployed Worker.
-
-### Docker Compose (local dev)
-
-```bash
-docker compose up -d
-```
-
-Runs the app on `localhost:8080` with a local Postgres 17 instance. The store auto-detects a non-Neon `DATABASE_URL` and uses the TCP-based driver.
-
-## Environment
-
-### Secrets (set via `wrangler secret put` or `.env`)
-
-| Variable | Description |
-|---|---|
-| `SLACK_BOT_TOKEN` | Slack bot user OAuth token (`xoxb-...`) |
-| `SLACK_SIGNING_SECRET` | Slack request signing secret |
-| `DATABASE_URL` | PostgreSQL connection string (Neon for Worker, local for Docker) |
-| `API_PASSWORD` | Password for Basic Auth on `/api/*` routes (empty = auth disabled) |
-
-### Vars (set in `wrangler.jsonc` or `.env`)
-
-| Variable | Description | Default |
-|---|---|---|
-| `BASE_URL` | Public base URL for feed links in Slack responses | `http://localhost:8080` |
-| `API_USERNAME` | Username for Basic Auth on `/api/*` routes | `admin` |
-| `LOCKDOWN_USERS` | Comma-separated Slack user IDs that bypass permission checks | (empty) |
-| `HACK_CLUB_CDN_KEY` | Hack Club CDN API key for `file_input` uploads | (empty) |
+See a node graph mapping the channels currently using Indigest in Hack Club at https://indigest.matmanna.dev
 
 ## Commands
 
@@ -88,8 +48,7 @@ All commands use the prefix `/in` (or `/indigest`). An optional `#channel` prefi
 
 ## Permissions
 
-- **channel creator** — can run all commands on channels they created
-- **workspace admin/owner** — can run all commands on any channel
+- **channel manager** — can run all commands on channels they created
 - **lockdown override** — listed in `LOCKDOWN_USERS`, can run all commands everywhere
 - **none** — can only view `status` and feed URLs
 
@@ -277,3 +236,49 @@ docker compose run app bun run db:studio
 npx wrangler dev        # local dev
 npx wrangler deploy     # deploy to Cloudflare
 ```
+
+
+## Deploy
+
+### Cloudflare Worker (production)
+
+```bash
+npx wrangler login
+npx wrangler secret put SLACK_BOT_TOKEN
+npx wrangler secret put SLACK_SIGNING_SECRET
+npx wrangler secret put DATABASE_URL
+npx wrangler deploy
+```
+
+The Worker auto-detects Neon Postgres from the `DATABASE_URL` and uses the HTTP-based store. Schema is bootstrapped on first request.
+
+Update your Slack app's Event Subscriptions and Interactions URLs to point to the deployed Worker.
+
+### Docker Compose (local dev)
+
+```bash
+docker compose up -d
+```
+
+Runs the app on `localhost:8080` with a local Postgres 17 instance. The store auto-detects a non-Neon `DATABASE_URL` and uses the TCP-based driver.
+
+## Environment
+
+### Secrets (set via `wrangler secret put` or `.env`)
+
+| Variable | Description |
+|---|---|
+| `SLACK_BOT_TOKEN` | Slack bot user OAuth token (`xoxb-...`) |
+| `SLACK_SIGNING_SECRET` | Slack request signing secret |
+| `DATABASE_URL` | PostgreSQL connection string (Neon for Worker, local for Docker) |
+| `API_PASSWORD` | Password for Basic Auth on `/api/*` routes (empty = auth disabled) |
+
+### Vars (set in `wrangler.jsonc` or `.env`)
+
+| Variable | Description | Default |
+|---|---|---|
+| `BASE_URL` | Public base URL for feed links in Slack responses | `http://localhost:8080` |
+| `API_USERNAME` | Username for Basic Auth on `/api/*` routes | `admin` |
+| `LOCKDOWN_USERS` | Comma-separated Slack user IDs that bypass permission checks | (empty) |
+| `HACK_CLUB_CDN_KEY` | Hack Club CDN API key for `file_input` uploads | (empty) |
+
