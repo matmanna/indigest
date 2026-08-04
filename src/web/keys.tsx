@@ -135,7 +135,7 @@ function KeysList() {
                     })
                     .catch((e) => setError(String(e)));
                 }}
-                class="button bg-red"
+                class="button"
               >
                 revoke!
               </button>

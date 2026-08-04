@@ -347,7 +347,7 @@ body {
 }
 
 .bg-red {
-  background-color: #983b3d;
+  background-color: oklch(70.4% .191 22.216);
   color: white;
 }
 
