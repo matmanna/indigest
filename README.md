@@ -15,9 +15,9 @@
 1. The bot is added to any channel
 2. A channel manager or bot admin runs `/in pub`
 3. Messages get approved manually ('yep'/'nope' buttons) or automatically (auto-approve)
-5. Approved messages are stored in PostgreSQL and served via RSS/JSON/Webhooks
-4. If configured, extra metadata can be set through a Slack form modal
-7. Managers of other channels can run `/in sub` to receive forwarded copies of approved messages
+4. Approved messages are stored in PostgreSQL and served via RSS/JSON/Webhooks
+5. If configured, extra metadata can be set through a Slack form modal
+6. Managers of other channels can run `/in sub` to receive forwarded copies of approved messages
 
 ## Map of the network
 
@@ -27,24 +27,24 @@ See a node graph mapping the channels currently using Indigest in Hack Club at h
 
 All commands use the prefix `/in` (or `/indigest`). An optional `#channel` prefix on any command targets a different channel.
 
-| Command | Description |
-|---------|-------------|
-| `/in` | Show help message with all commands |
-| `/in pub` | Enable manual mode (buttons on every message) |
-| `/in pub auto` | Enable auto-approve for **all users** |
-| `/in pub auto @user` | Enable auto-approve for a specific user |
-| `/in pub manual` | Explicitly enable manual mode (clears auto-approve) |
-| `/in unpub` | Disable indigest for a channel |
-| `/in unpub auto [@user]` | Remove auto-approve for a user (or all users) |
-| `/in sub #channel` | Subscribe this channel to receive forwarded messages from `#channel` |
-| `/in unsub #channel` | Unsubscribe this channel from `#channel` |
-| `/in status` | Show pub status, feed URLs, subscriptions, and permissions |
-| `/in webhook <url>` | Set webhook URL for approved messages |
-| `/in webhook clear` | Remove webhook |
-| `/in auto list` | List auto-approve users |
-| `/in schema set <json>` | Set metadata schema (see below) |
-| `/in schema get` | View current metadata schema |
-| `/in schema clear` | Remove metadata schema |
+| Command                  | Description                                                          |
+| ------------------------ | -------------------------------------------------------------------- |
+| `/in`                    | Show help message with all commands                                  |
+| `/in pub`                | Enable manual mode (buttons on every message)                        |
+| `/in pub auto`           | Enable auto-approve for **all users**                                |
+| `/in pub auto @user`     | Enable auto-approve for a specific user                              |
+| `/in pub manual`         | Explicitly enable manual mode (clears auto-approve)                  |
+| `/in unpub`              | Disable indigest for a channel                                       |
+| `/in unpub auto [@user]` | Remove auto-approve for a user (or all users)                        |
+| `/in sub #channel`       | Subscribe this channel to receive forwarded messages from `#channel` |
+| `/in unsub #channel`     | Unsubscribe this channel from `#channel`                             |
+| `/in status`             | Show pub status, feed URLs, subscriptions, and permissions           |
+| `/in webhook <url>`      | Set webhook URL for approved messages                                |
+| `/in webhook clear`      | Remove webhook                                                       |
+| `/in auto list`          | List auto-approve users                                              |
+| `/in schema set <json>`  | Set metadata schema (see below)                                      |
+| `/in schema get`         | View current metadata schema                                         |
+| `/in schema clear`       | Remove metadata schema                                               |
 
 ## Permissions
 
@@ -59,6 +59,7 @@ All commands use the prefix `/in` (or `/indigest`). An optional `#channel` prefi
 A **subscription** means channel A subscribes to channel B. When a message is approved in channel B, it is automatically forwarded to channel A as a new Slack message posted as the original author (with their name and profile picture).
 
 **Forwarded messages include:**
+
 - The original author's display name and avatar
 - The message text
 - A context footer with a permalink to the original message
@@ -80,16 +81,16 @@ Channel creators can define a metadata form that opens in a **modal** when someo
 
 **Supported field types:**
 
-| Type | Notes |
-|------|-------|
-| `plain_text_input` | Supports `multiline`, `min_length`, `max_length`, `placeholder`, `initial_value` |
-| `url_text_input` | URL validation built in |
-| `email_text_input` | Email validation built in |
-| `number_input` | Integer only |
-| `static_select` | Single select, requires `options` array with `{label, value}` |
-| `multi_static_select` | Multi-select, requires `options` array |
-| `datepicker` | Date picker |
-| `file_input` | File upload (uploaded to Hack Club CDN if key is set) |
+| Type                  | Notes                                                                            |
+| --------------------- | -------------------------------------------------------------------------------- |
+| `plain_text_input`    | Supports `multiline`, `min_length`, `max_length`, `placeholder`, `initial_value` |
+| `url_text_input`      | URL validation built in                                                          |
+| `email_text_input`    | Email validation built in                                                        |
+| `number_input`        | Integer only                                                                     |
+| `static_select`       | Single select, requires `options` array with `{label, value}`                    |
+| `multi_static_select` | Multi-select, requires `options` array                                           |
+| `datepicker`          | Date picker                                                                      |
+| `file_input`          | File upload (uploaded to Hack Club CDN if key is set)                            |
 
 Submitted metadata is stored as JSON in the `metadata` column, included in webhook payloads, and returned in the JSON API.
 
@@ -107,7 +108,7 @@ When a message is approved, fires `POST` to the webhook URL:
     "user_name": "alice",
     "text": "the message text",
     "timestamp": "2025-01-01T00:00:00.000Z",
-    "metadata": {"title":"My Title","priority":"high"}
+    "metadata": { "title": "My Title", "priority": "high" }
   }
 }
 ```
@@ -129,16 +130,17 @@ All endpoints require Basic Auth using `API_USERNAME` / `API_PASSWORD`. If `API_
 GET /api/messages?channel=<channel_id>&limit=50&page=1&after=2025-01-01T00:00:00Z&before=2026-01-01T00:00:00Z&userId=U12345
 ```
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `channel` | string | yes | Slack channel ID |
-| `limit` | number | no | Results per page (1-10000, default 50) |
-| `page` | number | no | Page number (default 1) |
-| `after` | string | no | ISO 8601 timestamp — only messages after this time |
-| `before` | string | no | ISO 8601 timestamp — only messages before this time |
-| `userId` | string | no | Filter by Slack user ID |
+| Parameter | Type   | Required | Description                                         |
+| --------- | ------ | -------- | --------------------------------------------------- |
+| `channel` | string | yes      | Slack channel ID                                    |
+| `limit`   | number | no       | Results per page (1-10000, default 50)              |
+| `page`    | number | no       | Page number (default 1)                             |
+| `after`   | string | no       | ISO 8601 timestamp — only messages after this time  |
+| `before`  | string | no       | ISO 8601 timestamp — only messages before this time |
+| `userId`  | string | no       | Filter by Slack user ID                             |
 
 **Response:**
+
 ```json
 {
   "data": [
@@ -168,12 +170,13 @@ GET /api/messages?channel=<channel_id>&limit=50&page=1&after=2025-01-01T00:00:00
 GET /api/messages/{slackTs}?channel=<channel_id>
 ```
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `slackTs` | string | yes | Slack message timestamp (in path) |
-| `channel` | string | yes | Slack channel ID (query param) |
+| Parameter | Type   | Required | Description                       |
+| --------- | ------ | -------- | --------------------------------- |
+| `slackTs` | string | yes      | Slack message timestamp (in path) |
+| `channel` | string | yes      | Slack channel ID (query param)    |
 
 **Response:**
+
 ```json
 {
   "data": {
@@ -237,7 +240,6 @@ npx wrangler dev        # local dev
 npx wrangler deploy     # deploy to Cloudflare
 ```
 
-
 ## Deploy
 
 ### Cloudflare Worker (production)
@@ -266,19 +268,18 @@ Runs the app on `localhost:8080` with a local Postgres 17 instance. The store au
 
 ### Secrets (set via `wrangler secret put` or `.env`)
 
-| Variable | Description |
-|---|---|
-| `SLACK_BOT_TOKEN` | Slack bot user OAuth token (`xoxb-...`) |
-| `SLACK_SIGNING_SECRET` | Slack request signing secret |
-| `DATABASE_URL` | PostgreSQL connection string (Neon for Worker, local for Docker) |
-| `API_PASSWORD` | Password for Basic Auth on `/api/*` routes (empty = auth disabled) |
+| Variable               | Description                                                        |
+| ---------------------- | ------------------------------------------------------------------ |
+| `SLACK_BOT_TOKEN`      | Slack bot user OAuth token (`xoxb-...`)                            |
+| `SLACK_SIGNING_SECRET` | Slack request signing secret                                       |
+| `DATABASE_URL`         | PostgreSQL connection string (Neon for Worker, local for Docker)   |
+| `API_PASSWORD`         | Password for Basic Auth on `/api/*` routes (empty = auth disabled) |
 
 ### Vars (set in `wrangler.jsonc` or `.env`)
 
-| Variable | Description | Default |
-|---|---|---|
-| `BASE_URL` | Public base URL for feed links in Slack responses | `http://localhost:8080` |
-| `API_USERNAME` | Username for Basic Auth on `/api/*` routes | `admin` |
-| `LOCKDOWN_USERS` | Comma-separated Slack user IDs that bypass permission checks | (empty) |
-| `HACK_CLUB_CDN_KEY` | Hack Club CDN API key for `file_input` uploads | (empty) |
-
+| Variable            | Description                                                  | Default                 |
+| ------------------- | ------------------------------------------------------------ | ----------------------- |
+| `BASE_URL`          | Public base URL for feed links in Slack responses            | `http://localhost:8080` |
+| `API_USERNAME`      | Username for Basic Auth on `/api/*` routes                   | `admin`                 |
+| `LOCKDOWN_USERS`    | Comma-separated Slack user IDs that bypass permission checks | (empty)                 |
+| `HACK_CLUB_CDN_KEY` | Hack Club CDN API key for `file_input` uploads               | (empty)                 |

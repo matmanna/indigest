@@ -62,7 +62,11 @@ export const authOrApiKeyProcedure = base.use(async ({ context, next }) => {
   return next();
 });
 
-export async function isChannelManager(channelId: string, userId: string, slackToken: string): Promise<boolean> {
+export async function isChannelManager(
+  channelId: string,
+  userId: string,
+  slackToken: string,
+): Promise<boolean> {
   if (!slackToken) return false;
   const slack = new WebClient(slackToken);
   try {

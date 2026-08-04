@@ -11,7 +11,8 @@ function renderLockdownBanner(users: LockdownUser[]) {
   banner.className = "lockdown-banner";
 
   const message = document.createElement("span");
-  message.textContent = "🔒 lockdown mode enabled: contact an authorized user (";
+  message.textContent =
+    "🔒 lockdown mode enabled: contact an authorized user (";
   banner.appendChild(message);
 
   users.forEach((user, index) => {
@@ -22,7 +23,8 @@ function renderLockdownBanner(users: LockdownUser[]) {
     link.textContent = `@${user.name || user.id}`;
     banner.appendChild(link);
 
-    if (index < users.length - 1) banner.appendChild(document.createTextNode(", "));
+    if (index < users.length - 1)
+      banner.appendChild(document.createTextNode(", "));
   });
 
   banner.appendChild(document.createTextNode(") to configure the bot"));
@@ -30,7 +32,9 @@ function renderLockdownBanner(users: LockdownUser[]) {
 }
 
 fetch("/site-config")
-  .then((response): Promise<{ lockdownUsers: LockdownUser[] }> | null => response.ok ? response.json() : null)
+  .then((response): Promise<{ lockdownUsers: LockdownUser[] }> | null =>
+    response.ok ? response.json() : null,
+  )
   .then((config) => {
     const users = config?.lockdownUsers || [];
     if (users.length === 0 || !document.body) return;

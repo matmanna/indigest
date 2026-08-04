@@ -1,6 +1,10 @@
 import { ORPCError } from "@orpc/server";
 import { z } from "zod";
-import { publicProcedure, authOrApiKeyProcedure, authRequiredProcedure } from "../context";
+import {
+  publicProcedure,
+  authOrApiKeyProcedure,
+  authRequiredProcedure,
+} from "../context";
 
 const channelSchema = z.object({
   id: z.string(),

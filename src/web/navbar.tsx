@@ -27,23 +27,36 @@ function Navbar({ active }: { active: string }) {
 
   return (
     <nav class="navbar">
-      <a href="/" class="navbar-brand">indigest</a>
+      <a href="/" class="navbar-brand">
+        indigest
+      </a>
       <div class="navbar-links navbar-links-main">
-        <a href="/" class={active === "map" ? "active" : ""}>feed map</a>
-        <a href="/docs.html" class={active === "docs" ? "active" : ""}>api</a>
-        <a href="/usage.html" class={active === "usage" ? "active" : ""}>usage</a>
-    
-        <a href="https://github.com/matmanna/indigest">github (★ {stars ?? "?"}) ↗
+        <a href="/" class={active === "map" ? "active" : ""}>
+          feed map
+        </a>
+        <a href="/docs.html" class={active === "docs" ? "active" : ""}>
+          api
+        </a>
+        <a href="/usage.html" class={active === "usage" ? "active" : ""}>
+          usage
+        </a>
+
+        <a href="https://github.com/matmanna/indigest">
+          github (★ {stars ?? "?"}) ↗
           <span class="badge rot-badge">🫵 have you starred yet??? </span>
           {/* (⭐ {stars ?? "?"})          {' '} 〉 */}
-</a>
+        </a>
       </div>
-      {isPending ? <p>loading...</p> : session?.user ? (
+      {isPending ? (
+        <p>loading...</p>
+      ) : session?.user ? (
         <div class="navbar-links">
-          <a href="/keys.html" class={active === "keys" ? "active" : ""}>your keys</a>
-        <button class="button" onClick={() => authClient.signOut()}>
-          Log out ({session.user.slackId})
-        </button>
+          <a href="/keys.html" class={active === "keys" ? "active" : ""}>
+            your keys
+          </a>
+          <button class="button" onClick={() => authClient.signOut()}>
+            Log out ({session.user.slackId})
+          </button>
         </div>
       ) : (
         <button

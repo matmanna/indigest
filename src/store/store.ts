@@ -49,14 +49,33 @@ export interface Store {
   listEnabledChannels(): Promise<StoreChannel[]>;
   upsertMessage(msg: StoreMessage): Promise<void>;
   deleteMessage(channelId: string, slackTs: string): Promise<void>;
-  getMessages(channelId: string, limit?: number, offset?: number): Promise<StoreMessage[]>;
-  addSubscription(subscriberChannelId: string, sourceChannelId: string): Promise<void>;
-  removeSubscription(subscriberChannelId: string, sourceChannelId: string): Promise<void>;
+  getMessages(
+    channelId: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<StoreMessage[]>;
+  addSubscription(
+    subscriberChannelId: string,
+    sourceChannelId: string,
+  ): Promise<void>;
+  removeSubscription(
+    subscriberChannelId: string,
+    sourceChannelId: string,
+  ): Promise<void>;
   getSubscribersBySource(sourceChannelId: string): Promise<StoreSubscription[]>;
-  getSubscriptionsBySubscriber(subscriberChannelId: string): Promise<StoreSubscription[]>;
+  getSubscriptionsBySubscriber(
+    subscriberChannelId: string,
+  ): Promise<StoreSubscription[]>;
   getRecentMessages(channelId: string, since: Date): Promise<StoreMessage[]>;
   addBotAction(action: StoreBotAction): Promise<void>;
-  getBotActionsBySource(sourceChannelId: string, sourceMessageTs: string): Promise<StoreBotAction[]>;
-  getGraphData(): Promise<{ channels: StoreChannel[]; subscriptions: StoreSubscription[]; subscriberChannels: StoreChannel[] }>;
+  getBotActionsBySource(
+    sourceChannelId: string,
+    sourceMessageTs: string,
+  ): Promise<StoreBotAction[]>;
+  getGraphData(): Promise<{
+    channels: StoreChannel[];
+    subscriptions: StoreSubscription[];
+    subscriberChannels: StoreChannel[];
+  }>;
   close(): void;
 }

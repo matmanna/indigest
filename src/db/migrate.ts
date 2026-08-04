@@ -3,7 +3,11 @@ import postgres from "postgres";
 import { sql } from "drizzle-orm";
 
 export async function pushSchema(connectionString: string) {
-  const client = postgres(connectionString, { max: 1, debug: false, onnotice: () => {} });
+  const client = postgres(connectionString, {
+    max: 1,
+    debug: false,
+    onnotice: () => {},
+  });
   const db = drizzle(client);
 
   await db.execute(sql`
@@ -46,13 +50,34 @@ export async function pushSchema(connectionString: string) {
 
   // Add columns if they don't exist (for existing DBs) — each in try/catch so one failure doesn't block others
   const alters: Array<[string, any]> = [
-    ["link_mode", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS link_mode INTEGER NOT NULL DEFAULT 0`],
-    ["auto_approve_users", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS auto_approve_users TEXT NOT NULL DEFAULT ''`],
-    ["approved_posters", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS approved_posters TEXT NOT NULL DEFAULT ''`],
-    ["track_replies", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS track_replies INTEGER NOT NULL DEFAULT 0`],
-    ["metadata_schema", sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS metadata_schema TEXT NOT NULL DEFAULT ''`],
-    ["metadata", sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'`],
-    ["thread_ts", sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS thread_ts TEXT`],
+    [
+      "link_mode",
+      sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS link_mode INTEGER NOT NULL DEFAULT 0`,
+    ],
+    [
+      "auto_approve_users",
+      sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS auto_approve_users TEXT NOT NULL DEFAULT ''`,
+    ],
+    [
+      "approved_posters",
+      sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS approved_posters TEXT NOT NULL DEFAULT ''`,
+    ],
+    [
+      "track_replies",
+      sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS track_replies INTEGER NOT NULL DEFAULT 0`,
+    ],
+    [
+      "metadata_schema",
+      sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS metadata_schema TEXT NOT NULL DEFAULT ''`,
+    ],
+    [
+      "metadata",
+      sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'`,
+    ],
+    [
+      "thread_ts",
+      sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS thread_ts TEXT`,
+    ],
   ];
   for (const [col, query] of alters) {
     try {
@@ -164,7 +189,9 @@ export async function pushSchema(connectionString: string) {
   `);
 
   try {
-    await db.execute(sql`ALTER TABLE auth_user ADD COLUMN IF NOT EXISTS slack_id TEXT`);
+    await db.execute(
+      sql`ALTER TABLE auth_user ADD COLUMN IF NOT EXISTS slack_id TEXT`,
+    );
   } catch {}
 
   // --- API Key tables ---

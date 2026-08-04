@@ -15,7 +15,8 @@
     "db:drop": "drizzle-kit drop",
     "db:check": "drizzle-kit check",
     "vercel:dev": "vercel dev",
-    "vercel:deploy": "vercel deploy --prod"
+    "vercel:deploy": "vercel deploy --prod",
+    "format": "npx prettier -write ."
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.48.0",

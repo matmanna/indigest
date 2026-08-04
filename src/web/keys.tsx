@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { renderNavbar } from "./navbar";
 import { authClient } from "../lib/auth-client";
-import './lockdown'
+import "./lockdown";
 
 renderNavbar("usage");
 
@@ -22,9 +22,18 @@ function KeysList() {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.json();
         })
-        .then((data) => { setChannels(Array.isArray(data) ? data : []); setChannelsPending(false) })
+        .then((data) => {
+          setChannels(Array.isArray(data) ? data : []);
+          setChannelsPending(false);
+        })
         .catch((e) => setError(String(e)));
-      fetch('api/api-keys').then((r) => r.json()).then((data) => { setKeys(Array.isArray(data) ? data : []); setKeysPending(false) }).catch((e) => setError(String(e)));
+      fetch("api/api-keys")
+        .then((r) => r.json())
+        .then((data) => {
+          setKeys(Array.isArray(data) ? data : []);
+          setKeysPending(false);
+        })
+        .catch((e) => setError(String(e)));
     }
   }, [session?.user?.slackId]);
 
@@ -66,30 +75,43 @@ function KeysList() {
 
   return (
     <div class="column">
-      {error && <p style={{ color: 'red' }}>Error: {error}</p>}
+      {error && <p style={{ color: "red" }}>Error: {error}</p>}
       {createdKey && (
-        <div className="card" style={{ borderColor: 'green' }}>
+        <div className="card" style={{ borderColor: "green" }}>
           <h3>Key created!</h3>
           <p>Copy this key now — it won't be shown again:</p>
-          <code style={{ userSelect: 'all', wordBreak: 'break-all' }}>{createdKey}</code>
+          <code style={{ userSelect: "all", wordBreak: "break-all" }}>
+            {createdKey}
+          </code>
         </div>
       )}
       <form class="card" onSubmit={handleSubmit}>
         <h2>make a new api key</h2>
         <span>
           <label for="key-name">key name:</label>
-          <input class="input" name="name" id="key-name" placeholder="key name" />
+          <input
+            class="input"
+            name="name"
+            id="key-name"
+            placeholder="key name"
+          />
         </span>
         <span>
           <label for="key-channels">scoped channels:</label>
           <select class="input" id="key-channels" name="channels" multiple>
-            <option value="">--{channelsPending ? "loading channels..." : "select channels"}--</option>
+            <option value="">
+              --{channelsPending ? "loading channels..." : "select channels"}--
+            </option>
             {channels.map((ch) => (
-              <option key={ch.id} value={ch.id}>#{ch.name || ch.id}</option>
+              <option key={ch.id} value={ch.id}>
+                #{ch.name || ch.id}
+              </option>
             ))}
           </select>
         </span>
-        <button type="submit" class="button">make a key!</button>
+        <button type="submit" class="button">
+          make a key!
+        </button>
       </form>
 
       <div class="keys-list card">
@@ -97,22 +119,31 @@ function KeysList() {
         {keysPending ? "loading keys..." : null}
         {keys.map((k) => (
           <div class="api-key card">
-            {k.name} ind_{k.keyPrefix}... {k.revokedBy && `Revoked by ${k.revokedBy}`} <button onClick={() => {
-              fetch(`api/api-keys/${k.id}`, {
-                method: "DELETE"
-              }).then((r) => r.json()).then((data) => { setKeys(Array.isArray(data) ? data : []); setKeysPending(false) }).catch((e) => setError(String(e)));
-
-            }} class="button red">revoke!</button>
-            {(k.channels != null && k.channels.length > 0) ? (
+            {k.name} ind_{k.keyPrefix}...{" "}
+            {k.revokedBy && `Revoked by ${k.revokedBy}`}{" "}
+            <button
+              onClick={() => {
+                fetch(`api/api-keys/${k.id}`, {
+                  method: "DELETE",
+                })
+                  .then((r) => r.json())
+                  .then((data) => {
+                    setKeys(Array.isArray(data) ? data : []);
+                    setKeysPending(false);
+                  })
+                  .catch((e) => setError(String(e)));
+              }}
+              class="button red"
+            >
+              revoke!
+            </button>
+            {k.channels != null && k.channels.length > 0 ? (
               <>
                 <strong>scoped channels: ({k.channels.length})</strong>
                 <ul>
                   {k.channels.map((c) => (
-
                     <li>{c}</li>
-                  )
-
-                  )}
+                  ))}
                 </ul>
               </>
             ) : null}
@@ -128,5 +159,5 @@ createRoot(document.getElementById("app")!).render(
     <h1>integrate with indigest</h1>
     <p>for now, all keys are read-only</p>
     <KeysList />
-  </div>
+  </div>,
 );

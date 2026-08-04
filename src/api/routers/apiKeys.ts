@@ -31,7 +31,7 @@ export const listApiKeys = authRequiredProcedure
           .from(apiKeyChannels)
           .where(eq(apiKeyChannels.keyId, key.id));
         return { ...key, channels: channels.map((c) => c.channelId) };
-      })
+      }),
     );
 
     return keysWithChannels;
@@ -39,21 +39,36 @@ export const listApiKeys = authRequiredProcedure
 
 export const createApiKey = authRequiredProcedure
   .route({ method: "POST", path: "/api-keys" })
-  .input(z.object({ name: z.string().min(1), channelIds: z.array(z.string()).optional() }))
+  .input(
+    z.object({
+      name: z.string().min(1),
+      channelIds: z.array(z.string()).optional(),
+    }),
+  )
   .handler(async ({ input, context }) => {
     const slackId = context.session?.user?.slackId;
-    if (!slackId) throw new ORPCError("FORBIDDEN", { message: "No Slack ID on session" });
+    if (!slackId)
+      throw new ORPCError("FORBIDDEN", { message: "No Slack ID on session" });
 
     // Validate user has access to each specified channel
     if (input.channelIds && input.channelIds.length > 0) {
       const isLockdown = context.lockdownUsers.includes(slackId);
       for (const channelId of input.channelIds) {
         const ch = await context.store.getChannel(channelId);
-        if (!ch) throw new ORPCError("NOT_FOUND", { message: `Channel ${channelId} not found` });
+        if (!ch)
+          throw new ORPCError("NOT_FOUND", {
+            message: `Channel ${channelId} not found`,
+          });
         if (!isLockdown && !ch.accessPermUsers.includes(slackId)) {
-          const isManager = await isChannelManager(channelId, slackId, context.slackToken);
+          const isManager = await isChannelManager(
+            channelId,
+            slackId,
+            context.slackToken,
+          );
           if (!isManager) {
-            throw new ORPCError("FORBIDDEN", { message: `You don't have access to channel ${ch.name || channelId}` });
+            throw new ORPCError("FORBIDDEN", {
+              message: `You don't have access to channel ${ch.name || channelId}`,
+            });
           }
         }
       }
@@ -91,8 +106,11 @@ export const revokeApiKey = authRequiredProcedure
   .handler(async ({ input, context }) => {
     const db = getDb(context.databaseUrl);
     await db.delete(apiKeyChannels).where(eq(apiKeyChannels.keyId, input.id));
-    await db.update(apiKeys)  .set({ revokedBy: context.session?.user?.id || null }).where(eq(apiKeys.id, input.id));
-  return {ok: true}
+    await db
+      .update(apiKeys)
+      .set({ revokedBy: context.session?.user?.id || null })
+      .where(eq(apiKeys.id, input.id));
+    return { ok: true };
   });
 
 export const apiKeyRouter = {

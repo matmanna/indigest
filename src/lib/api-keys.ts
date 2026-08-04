@@ -7,10 +7,16 @@ import { ORPCError } from "@orpc/server";
 const KEY_PREFIX = "ind_";
 const KEY_PREFIX_LENGTH = 12;
 
-export function generateApiKey(): { fullKey: string; keyPrefix: string; secretHash: Promise<string> } {
+export function generateApiKey(): {
+  fullKey: string;
+  keyPrefix: string;
+  secretHash: Promise<string>;
+} {
   const array = new Uint8Array(24);
   crypto.getRandomValues(array);
-  const secret = Array.from(array, (b) => b.toString(36).padStart(2, "0")).join("");
+  const secret = Array.from(array, (b) => b.toString(36).padStart(2, "0")).join(
+    "",
+  );
   const fullKey = KEY_PREFIX + secret;
   const keyPrefix = secret.slice(0, KEY_PREFIX_LENGTH);
   const secretHash = hashSecret(fullKey);
@@ -21,7 +27,9 @@ export async function hashSecret(secret: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(secret);
   const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(hash), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 export async function verifySecret(
@@ -86,7 +94,10 @@ export async function createApiKeyContext({
       channelId: schema.apiKeyChannels.channelId,
     })
     .from(schema.apiKeys)
-    .leftJoin(schema.apiKeyChannels, eq(schema.apiKeys.id, schema.apiKeyChannels.keyId))
+    .leftJoin(
+      schema.apiKeyChannels,
+      eq(schema.apiKeys.id, schema.apiKeyChannels.keyId),
+    )
     .where(eq(schema.apiKeys.keyPrefix, keyPrefix));
 
   if (rows.length === 0) {
@@ -104,9 +115,7 @@ export async function createApiKeyContext({
     });
   }
 
-  const channelIds = rows
-    .filter((r) => r.channelId)
-    .map((r) => r.channelId!);
+  const channelIds = rows.filter((r) => r.channelId).map((r) => r.channelId!);
 
   await db
     .update(schema.apiKeys)

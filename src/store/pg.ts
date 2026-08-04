@@ -2,22 +2,55 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { eq, sql, and, inArray } from "drizzle-orm";
 import * as schema from "../db/schema";
-import type { Store, StoreChannel, StoreMessage, StoreSubscription, StoreBotAction } from "./store";
+import type {
+  Store,
+  StoreChannel,
+  StoreMessage,
+  StoreSubscription,
+  StoreBotAction,
+} from "./store";
 
 export class PostgresStore implements Store {
   private db: ReturnType<typeof drizzle>;
   private client: ReturnType<typeof postgres>;
 
   constructor(connectionString: string) {
-    this.client = postgres(connectionString, { prepare: false, debug: false, onnotice: () => {} });
+    this.client = postgres(connectionString, {
+      prepare: false,
+      debug: false,
+      onnotice: () => {},
+    });
     this.db = drizzle(this.client, { schema });
   }
 
   async getChannel(id: string): Promise<StoreChannel | null> {
-    const rows = await this.db.select().from(schema.channels).where(eq(schema.channels.id, id)).limit(1);
+    const rows = await this.db
+      .select()
+      .from(schema.channels)
+      .where(eq(schema.channels.id, id))
+      .limit(1);
     if (rows.length === 0) return null;
     const r = rows[0]!;
-    return { accessPermUsers: r.accessPermUsers ? r.accessPermUsers.split(",").filter(Boolean) : ["*"], id: r.id, name: r.name, teamId: r.teamId, enabled: Boolean(r.enabled), linkMode: Boolean(r.linkMode), webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt };
+    return {
+      accessPermUsers: r.accessPermUsers
+        ? r.accessPermUsers.split(",").filter(Boolean)
+        : ["*"],
+      id: r.id,
+      name: r.name,
+      teamId: r.teamId,
+      enabled: Boolean(r.enabled),
+      linkMode: Boolean(r.linkMode),
+      webhookUrl: r.webhookUrl,
+      autoApproveUsers: r.autoApproveUsers
+        ? r.autoApproveUsers.split(",").filter(Boolean)
+        : [],
+      approvedPosters: r.approvedPosters
+        ? r.approvedPosters.split(",").filter(Boolean)
+        : [],
+      trackReplies: Boolean(r.trackReplies),
+      metadataSchema: r.metadataSchema,
+      createdAt: r.createdAt,
+    };
   }
 
   async upsertChannel(ch: StoreChannel): Promise<void> {
@@ -63,9 +96,15 @@ export class PostgresStore implements Store {
       enabled: Boolean(r.enabled),
       linkMode: Boolean(r.linkMode),
       webhookUrl: r.webhookUrl,
-      autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [],
-      accessPermUsers: r.accessPermUsers ? r.accessPermUsers.split(",").filter(Boolean) : [],
-      approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [],
+      autoApproveUsers: r.autoApproveUsers
+        ? r.autoApproveUsers.split(",").filter(Boolean)
+        : [],
+      accessPermUsers: r.accessPermUsers
+        ? r.accessPermUsers.split(",").filter(Boolean)
+        : [],
+      approvedPosters: r.approvedPosters
+        ? r.approvedPosters.split(",").filter(Boolean)
+        : [],
       trackReplies: Boolean(r.trackReplies),
       metadataSchema: r.metadataSchema,
       createdAt: r.createdAt,
@@ -73,8 +112,30 @@ export class PostgresStore implements Store {
   }
 
   async listEnabledChannels(): Promise<StoreChannel[]> {
-    const rows = await this.db.select().from(schema.channels).where(eq(schema.channels.enabled, 1));
-    return rows.map((r) => ({ id: r.id, name: r.name, teamId: r.teamId, enabled: true, linkMode: Boolean(r.linkMode), webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], accessPermUsers: r.accessPermUsers ? r.accessPermUsers.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt }));
+    const rows = await this.db
+      .select()
+      .from(schema.channels)
+      .where(eq(schema.channels.enabled, 1));
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      teamId: r.teamId,
+      enabled: true,
+      linkMode: Boolean(r.linkMode),
+      webhookUrl: r.webhookUrl,
+      autoApproveUsers: r.autoApproveUsers
+        ? r.autoApproveUsers.split(",").filter(Boolean)
+        : [],
+      approvedPosters: r.approvedPosters
+        ? r.approvedPosters.split(",").filter(Boolean)
+        : [],
+      accessPermUsers: r.accessPermUsers
+        ? r.accessPermUsers.split(",").filter(Boolean)
+        : [],
+      trackReplies: Boolean(r.trackReplies),
+      metadataSchema: r.metadataSchema,
+      createdAt: r.createdAt,
+    }));
   }
 
   async upsertMessage(msg: StoreMessage): Promise<void> {
@@ -88,7 +149,10 @@ export class PostgresStore implements Store {
         text: msg.text,
         threadTs: msg.threadTs || null,
         timestamp: msg.timestamp,
-        metadata: typeof msg.metadata === "string" ? msg.metadata : JSON.stringify(msg.metadata || {}),
+        metadata:
+          typeof msg.metadata === "string"
+            ? msg.metadata
+            : JSON.stringify(msg.metadata || {}),
       })
       .onConflictDoUpdate({
         target: [schema.messages.channelId, schema.messages.slackTs],
@@ -98,16 +162,30 @@ export class PostgresStore implements Store {
           text: msg.text,
           threadTs: msg.threadTs || null,
           timestamp: msg.timestamp,
-          metadata: typeof msg.metadata === "string" ? msg.metadata : JSON.stringify(msg.metadata || {}),
+          metadata:
+            typeof msg.metadata === "string"
+              ? msg.metadata
+              : JSON.stringify(msg.metadata || {}),
         },
       });
   }
 
   async deleteMessage(channelId: string, slackTs: string): Promise<void> {
-    await this.db.delete(schema.messages).where(and(eq(schema.messages.channelId, channelId), eq(schema.messages.slackTs, slackTs)));
+    await this.db
+      .delete(schema.messages)
+      .where(
+        and(
+          eq(schema.messages.channelId, channelId),
+          eq(schema.messages.slackTs, slackTs),
+        ),
+      );
   }
 
-  async getMessages(channelId: string, limit = 50, offset = 0): Promise<StoreMessage[]> {
+  async getMessages(
+    channelId: string,
+    limit = 50,
+    offset = 0,
+  ): Promise<StoreMessage[]> {
     if (limit > 200) limit = 200;
     const rows = await this.db
       .select()
@@ -125,7 +203,10 @@ export class PostgresStore implements Store {
       userName: r.userName,
       text: r.text,
       timestamp: r.timestamp,
-      metadata: typeof r.metadata === "string" ? r.metadata : JSON.stringify(r.metadata || {}),
+      metadata:
+        typeof r.metadata === "string"
+          ? r.metadata
+          : JSON.stringify(r.metadata || {}),
     }));
   }
 
@@ -133,25 +214,37 @@ export class PostgresStore implements Store {
     this.client.end();
   }
 
-  async addSubscription(subscriberChannelId: string, sourceChannelId: string): Promise<void> {
+  async addSubscription(
+    subscriberChannelId: string,
+    sourceChannelId: string,
+  ): Promise<void> {
     await this.db
       .insert(schema.subscriptions)
-      .values({ subscriberChannelId, sourceChannelId, createdAt: new Date().toISOString() })
+      .values({
+        subscriberChannelId,
+        sourceChannelId,
+        createdAt: new Date().toISOString(),
+      })
       .onConflictDoNothing();
   }
 
-  async removeSubscription(subscriberChannelId: string, sourceChannelId: string): Promise<void> {
+  async removeSubscription(
+    subscriberChannelId: string,
+    sourceChannelId: string,
+  ): Promise<void> {
     await this.db
       .delete(schema.subscriptions)
       .where(
         and(
           eq(schema.subscriptions.subscriberChannelId, subscriberChannelId),
-          eq(schema.subscriptions.sourceChannelId, sourceChannelId)
-        )
+          eq(schema.subscriptions.sourceChannelId, sourceChannelId),
+        ),
       );
   }
 
-  async getSubscribersBySource(sourceChannelId: string): Promise<StoreSubscription[]> {
+  async getSubscribersBySource(
+    sourceChannelId: string,
+  ): Promise<StoreSubscription[]> {
     const rows = await this.db
       .select()
       .from(schema.subscriptions)
@@ -164,7 +257,9 @@ export class PostgresStore implements Store {
     }));
   }
 
-  async getSubscriptionsBySubscriber(subscriberChannelId: string): Promise<StoreSubscription[]> {
+  async getSubscriptionsBySubscriber(
+    subscriberChannelId: string,
+  ): Promise<StoreSubscription[]> {
     const rows = await this.db
       .select()
       .from(schema.subscriptions)
@@ -177,12 +272,18 @@ export class PostgresStore implements Store {
     }));
   }
 
-  async getRecentMessages(channelId: string, since: Date): Promise<StoreMessage[]> {
+  async getRecentMessages(
+    channelId: string,
+    since: Date,
+  ): Promise<StoreMessage[]> {
     const sinceStr = since.toISOString();
     const rows = await this.db
       .select()
       .from(schema.messages)
-      .where(eq(schema.messages.channelId, channelId) && sql`${schema.messages.timestamp} >= ${sinceStr}`)
+      .where(
+        eq(schema.messages.channelId, channelId) &&
+          sql`${schema.messages.timestamp} >= ${sinceStr}`,
+      )
       .orderBy(sql`${schema.messages.timestamp} DESC`);
     return rows.map((r) => ({
       id: r.id,
@@ -193,7 +294,10 @@ export class PostgresStore implements Store {
       userName: r.userName,
       text: r.text,
       timestamp: r.timestamp,
-      metadata: typeof r.metadata === "string" ? r.metadata : JSON.stringify(r.metadata || {}),
+      metadata:
+        typeof r.metadata === "string"
+          ? r.metadata
+          : JSON.stringify(r.metadata || {}),
     }));
   }
 
@@ -208,11 +312,19 @@ export class PostgresStore implements Store {
     });
   }
 
-  async getBotActionsBySource(sourceChannelId: string, sourceMessageTs: string): Promise<StoreBotAction[]> {
+  async getBotActionsBySource(
+    sourceChannelId: string,
+    sourceMessageTs: string,
+  ): Promise<StoreBotAction[]> {
     const rows = await this.db
       .select()
       .from(schema.botActions)
-      .where(and(eq(schema.botActions.sourceChannelId, sourceChannelId), eq(schema.botActions.sourceMessageTs, sourceMessageTs)));
+      .where(
+        and(
+          eq(schema.botActions.sourceChannelId, sourceChannelId),
+          eq(schema.botActions.sourceMessageTs, sourceMessageTs),
+        ),
+      );
     return rows.map((r) => ({
       id: r.id,
       type: r.type,
@@ -232,16 +344,26 @@ export class PostgresStore implements Store {
       enabled: Boolean(r.enabled),
       linkMode: Boolean(r.linkMode),
       webhookUrl: r.webhookUrl,
-      autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [],
-      approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [],
-      accessPermUsers: r.accessPermUsers ? r.accessPermUsers.split(",").filter(Boolean) : [],
+      autoApproveUsers: r.autoApproveUsers
+        ? r.autoApproveUsers.split(",").filter(Boolean)
+        : [],
+      approvedPosters: r.approvedPosters
+        ? r.approvedPosters.split(",").filter(Boolean)
+        : [],
+      accessPermUsers: r.accessPermUsers
+        ? r.accessPermUsers.split(",").filter(Boolean)
+        : [],
       trackReplies: Boolean(r.trackReplies),
       metadataSchema: r.metadataSchema,
       createdAt: r.createdAt,
     };
   }
 
-  async getGraphData(): Promise<{ channels: StoreChannel[]; subscriptions: StoreSubscription[]; subscriberChannels: StoreChannel[] }> {
+  async getGraphData(): Promise<{
+    channels: StoreChannel[];
+    subscriptions: StoreSubscription[];
+    subscriberChannels: StoreChannel[];
+  }> {
     const [channelRows, subscriptionRows] = await Promise.all([
       this.db.select().from(schema.channels),
       this.db.select().from(schema.subscriptions),
@@ -251,11 +373,20 @@ export class PostgresStore implements Store {
 
     // Find subscriber channels that aren't already in the channels list
     const channelIds = new Set(channels.map((c) => c.id));
-    const subscriberChannelIds = [...new Set(subscriptionRows.map((r) => r.subscriberChannelId).filter((id) => !channelIds.has(id)))];
+    const subscriberChannelIds = [
+      ...new Set(
+        subscriptionRows
+          .map((r) => r.subscriberChannelId)
+          .filter((id) => !channelIds.has(id)),
+      ),
+    ];
 
     let subscriberChannels: StoreChannel[] = [];
     if (subscriberChannelIds.length > 0) {
-      const subRows = await this.db.select().from(schema.channels).where(inArray(schema.channels.id, subscriberChannelIds));
+      const subRows = await this.db
+        .select()
+        .from(schema.channels)
+        .where(inArray(schema.channels.id, subscriberChannelIds));
       subscriberChannels = subRows.map((r) => this.rowToChannel(r));
     }
 

@@ -12,7 +12,7 @@ export default defineConfig({
         main: "index.html",
         docs: "docs.html",
         usage: "usage.html",
-        keys: "keys.html"
+        keys: "keys.html",
       },
     },
   },

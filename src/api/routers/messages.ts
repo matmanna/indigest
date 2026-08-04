@@ -18,7 +18,8 @@ export const listMessages = authOrApiKeyProcedure
     const { channel, after, before, userId, limit, page } = input;
 
     const ch = await context.store.getChannel(channel);
-    if (!ch || !ch.enabled) throw new ORPCError("Channel not found or not enabled");
+    if (!ch || !ch.enabled)
+      throw new ORPCError("Channel not found or not enabled");
 
     const all = await context.store.getMessages(channel, 100000, 0);
 

@@ -30,7 +30,8 @@ export function getAuth(databaseUrl: string, env?: Record<string, string>) {
         config: [
           {
             providerId: "hackclub",
-            discoveryUrl: "https://auth.hackclub.com/.well-known/openid-configuration",
+            discoveryUrl:
+              "https://auth.hackclub.com/.well-known/openid-configuration",
             clientId: env?.HACKCLUB_CLIENT_ID || "",
             clientSecret: env?.HACKCLUB_CLIENT_SECRET || "",
             scopes: ["openid", "profile", "email", "slack_id"],
@@ -65,7 +66,10 @@ export function getAuth(databaseUrl: string, env?: Record<string, string>) {
  * After user create/update, read the id_token from auth_account, decode it,
  * and set slack_id on auth_user if present.
  */
-async function setSlackIdFromAccount(databaseUrl: string, userId: string): Promise<void> {
+async function setSlackIdFromAccount(
+  databaseUrl: string,
+  userId: string,
+): Promise<void> {
   try {
     const db = getDb(databaseUrl);
     const accounts = await db
@@ -90,7 +94,9 @@ async function setSlackIdFromAccount(databaseUrl: string, userId: string): Promi
       .update(schema.authUser)
       .set({ slackId: payload.slack_id })
       .where(eq(schema.authUser.id, userId));
-    console.log(`setSlackId: set slack_id=${payload.slack_id} for user ${userId}`);
+    console.log(
+      `setSlackId: set slack_id=${payload.slack_id} for user ${userId}`,
+    );
   } catch (err: any) {
     console.error("setSlackIdFromAccount failed:", err.message);
   }
@@ -98,5 +104,7 @@ async function setSlackIdFromAccount(databaseUrl: string, userId: string): Promi
 
 // Default export for `npx auth generate` — uses DATABASE_URL env var
 const databaseUrl = process.env.DATABASE_URL || "";
-export const auth = databaseUrl ? getAuth(databaseUrl, process.env as Record<string, string>) : (null as any);
+export const auth = databaseUrl
+  ? getAuth(databaseUrl, process.env as Record<string, string>)
+  : (null as any);
 export default auth;

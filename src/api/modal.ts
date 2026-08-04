@@ -20,7 +20,10 @@ export interface MetadataSchema {
 
 function buildBlocks(schema: MetadataSchema): any[] {
   const blocks: any[] = [
-    { type: "header", text: { type: "plain_text", text: schema.title, emoji: true } },
+    {
+      type: "header",
+      text: { type: "plain_text", text: schema.title, emoji: true },
+    },
     { type: "divider" },
   ];
 
@@ -31,7 +34,9 @@ function buildBlocks(schema: MetadataSchema): any[] {
       case "plain_text_input":
       case "url_text_input":
       case "email_text_input":
-        element.placeholder = field.placeholder ? { type: "plain_text", text: field.placeholder } : undefined;
+        element.placeholder = field.placeholder
+          ? { type: "plain_text", text: field.placeholder }
+          : undefined;
         element.initial_value = field.initial_value;
         element.multiline = field.multiline;
         element.min_length = field.min_length;
@@ -39,7 +44,9 @@ function buildBlocks(schema: MetadataSchema): any[] {
         break;
 
       case "number_input":
-        element.placeholder = field.placeholder ? { type: "plain_text", text: field.placeholder } : undefined;
+        element.placeholder = field.placeholder
+          ? { type: "plain_text", text: field.placeholder }
+          : undefined;
         element.initial_value = field.initial_value;
         element.min_length = field.min_length;
         element.max_length = field.max_length;
@@ -48,12 +55,19 @@ function buildBlocks(schema: MetadataSchema): any[] {
 
       case "static_select":
       case "multi_static_select":
-        element.placeholder = field.placeholder ? { type: "plain_text", text: field.placeholder } : undefined;
-        element.options = (field.options || []).map((o) => ({ text: { type: "plain_text", text: o.label }, value: o.value }));
+        element.placeholder = field.placeholder
+          ? { type: "plain_text", text: field.placeholder }
+          : undefined;
+        element.options = (field.options || []).map((o) => ({
+          text: { type: "plain_text", text: o.label },
+          value: o.value,
+        }));
         break;
 
       case "datepicker":
-        element.placeholder = field.placeholder ? { type: "plain_text", text: field.placeholder } : undefined;
+        element.placeholder = field.placeholder
+          ? { type: "plain_text", text: field.placeholder }
+          : undefined;
         element.initial_date = field.initial_value;
         break;
 
@@ -73,7 +87,21 @@ function buildBlocks(schema: MetadataSchema): any[] {
   return blocks;
 }
 
-function extractMetadata(schema: MetadataSchema, state: Record<string, Record<string, { value?: string; selected_options?: { value: string }[]; selected_date?: string; files?: any[] }>>): Record<string, any> {
+function extractMetadata(
+  schema: MetadataSchema,
+  state: Record<
+    string,
+    Record<
+      string,
+      {
+        value?: string;
+        selected_options?: { value: string }[];
+        selected_date?: string;
+        files?: any[];
+      }
+    >
+  >,
+): Record<string, any> {
   const metadata: Record<string, any> = {};
   for (const field of schema.fields) {
     const values = state?.[`field_${field.action_id}`]?.[field.action_id];
@@ -81,7 +109,8 @@ function extractMetadata(schema: MetadataSchema, state: Record<string, Record<st
 
     switch (field.type) {
       case "multi_static_select":
-        metadata[field.action_id] = values.selected_options?.map((o) => o.value) || [];
+        metadata[field.action_id] =
+          values.selected_options?.map((o) => o.value) || [];
         break;
       case "datepicker":
         metadata[field.action_id] = values.selected_date || "";
@@ -112,7 +141,11 @@ export async function openMetadataModal(
       type: "modal",
       callback_id: "metadata_modal",
       title: { type: "plain_text", text: schema.title, emoji: true },
-      submit: { type: "plain_text", text: schema.submit_label || "Save to Feed", emoji: true },
+      submit: {
+        type: "plain_text",
+        text: schema.submit_label || "Save to Feed",
+        emoji: true,
+      },
       close: { type: "plain_text", text: "Cancel", emoji: true },
       private_metadata: JSON.stringify({ channelId, messageTs, botMessageTs }),
       notify_on_close: true,
@@ -123,7 +156,18 @@ export async function openMetadataModal(
 
 export function extractMetadataFromView(
   schema: MetadataSchema,
-  state: Record<string, Record<string, { value?: string; selected_options?: { value: string }[]; selected_date?: string; files?: any[] }>>,
+  state: Record<
+    string,
+    Record<
+      string,
+      {
+        value?: string;
+        selected_options?: { value: string }[];
+        selected_date?: string;
+        files?: any[];
+      }
+    >
+  >,
 ): string {
   const metadata = extractMetadata(schema, state);
   return JSON.stringify(metadata);

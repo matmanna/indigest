@@ -1,0 +1,12 @@
+.crush/
+.jj/
+.env.example
+.env
+build/
+dist/
+.wrangler/
+public/
+node_modules/
+bun.lock
+.git/
+
