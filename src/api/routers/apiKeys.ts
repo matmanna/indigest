@@ -1,6 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import { z } from "zod";
-import { authRequiredProcedure } from "../context";
+import { authRequiredProcedure, isChannelManager } from "../context";
 import { generateApiKey } from "../../lib/api-keys";
 import { getDb } from "../../db";
 import { apiKeys, apiKeyChannels } from "../../db/schema";
@@ -41,6 +41,24 @@ export const createApiKey = authRequiredProcedure
   .route({ method: "POST", path: "/api-keys" })
   .input(z.object({ name: z.string().min(1), channelIds: z.array(z.string()).optional() }))
   .handler(async ({ input, context }) => {
+    const slackId = context.session?.user?.slackId;
+    if (!slackId) throw new ORPCError("FORBIDDEN", { message: "No Slack ID on session" });
+
+    // Validate user has access to each specified channel
+    if (input.channelIds && input.channelIds.length > 0) {
+      const isLockdown = context.lockdownUsers.includes(slackId);
+      for (const channelId of input.channelIds) {
+        const ch = await context.store.getChannel(channelId);
+        if (!ch) throw new ORPCError("NOT_FOUND", { message: `Channel ${channelId} not found` });
+        if (!isLockdown && !ch.accessPermUsers.includes(slackId)) {
+          const isManager = await isChannelManager(channelId, slackId, context.slackToken);
+          if (!isManager) {
+            throw new ORPCError("FORBIDDEN", { message: `You don't have access to channel ${ch.name || channelId}` });
+          }
+        }
+      }
+    }
+
     const { fullKey, keyPrefix, secretHash } = generateApiKey();
     const hash = await secretHash;
 

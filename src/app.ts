@@ -188,6 +188,7 @@ function isSlackPermalink(text: string): boolean {
 interface FeedIdentity {
   type: "session" | "apikey";
   slackId: string;
+  channelIds?: string[];
 }
 
 async function resolveFeedIdentity(c: any, env: Env): Promise<FeedIdentity | null> {
@@ -213,7 +214,7 @@ async function resolveFeedIdentity(c: any, env: Env): Promise<FeedIdentity | nul
         const db = getDb(dbUrl);
         const users = await db.select({ slackId: schema.authUser.slackId }).from(schema.authUser).where(eq(schema.authUser.id, identity.owner));
         if (users[0]?.slackId) {
-          return { type: "apikey", slackId: users[0].slackId };
+          return { type: "apikey", slackId: users[0].slackId, channelIds: identity.channelIds };
         }
       }
     } catch {}
@@ -225,6 +226,10 @@ async function resolveFeedIdentity(c: any, env: Env): Promise<FeedIdentity | nul
 function canAccessFeed(ch: StoreChannel, identity: FeedIdentity | null): boolean {
   if (ch.accessPermUsers.includes("*")) return true;
   if (!identity) return false;
+  // API keys are scoped to specific channels
+  if (identity.type === "apikey" && identity.channelIds && identity.channelIds.length > 0) {
+    return identity.channelIds.includes(ch.id);
+  }
   return ch.accessPermUsers.includes(identity.slackId);
 }
 
