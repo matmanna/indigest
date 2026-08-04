@@ -346,9 +346,13 @@ body {
   transition: all 0.2s ease;
 }
 
-.red {
+.bg-red {
   background-color: #983b3d;
   color: white;
+}
+
+.red {
+  color: #983b3d;
 }
 
 .card,

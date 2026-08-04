@@ -120,23 +120,26 @@ function KeysList() {
         {keys.map((k) => (
           <div class="api-key card">
             {k.name} ind_{k.keyPrefix}...{" "}
-            {k.revokedBy && `Revoked by ${k.revokedBy}`}{" "}
-            <button
-              onClick={() => {
-                fetch(`api/api-keys/${k.id}`, {
-                  method: "DELETE",
-                })
-                  .then((r) => r.json())
-                  .then((data) => {
-                    setKeys(Array.isArray(data) ? data : []);
-                    setKeysPending(false);
+            {k.revokedBy ? (
+              <p class="red">{`Revoked by ${k.revokedBy}`}{" "}</p>
+            ) :
+              <button
+                onClick={() => {
+                  fetch(`api/api-keys/${k.id}`, {
+                    method: "DELETE",
                   })
-                  .catch((e) => setError(String(e)));
-              }}
-              class="button red"
-            >
-              revoke!
-            </button>
+                    .then((r) => r.json())
+                    .then((data) => {
+                      setKeys(Array.isArray(data) ? data : []);
+                      setKeysPending(false);
+                    })
+                    .catch((e) => setError(String(e)));
+                }}
+                class="button bg-red"
+              >
+                revoke!
+              </button>
+            }
             {k.channels != null && k.channels.length > 0 ? (
               <>
                 <strong>scoped channels: ({k.channels.length})</strong>
@@ -157,7 +160,7 @@ function KeysList() {
 createRoot(document.getElementById("app")!).render(
   <div className="markdown-body">
     <h1>integrate with indigest</h1>
-    <p>for now, all keys are read-only</p>
+    {/** <p>for now, all keys are read-only</p>**/}
     <KeysList />
   </div>,
 );

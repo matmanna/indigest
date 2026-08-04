@@ -3,8 +3,10 @@ import { z } from "zod";
 import { authRequiredProcedure, isChannelManager } from "../context";
 import { generateApiKey } from "../../lib/api-keys";
 import { getDb } from "../../db";
-import { apiKeys, apiKeyChannels } from "../../db/schema";
+import { apiKeys, apiKeyChannels, authUser } from "../../db/schema";
 import { eq } from "drizzle-orm";
+import { aliasedTable } from "drizzle-orm/alias";
+
 
 export const listApiKeys = authRequiredProcedure
   .route({ method: "GET", path: "/api-keys" })
@@ -13,6 +15,7 @@ export const listApiKeys = authRequiredProcedure
     const userId = context.session?.user?.id;
     if (!userId) return [];
 
+    const revokedByUser = aliasedTable(authUser, "revokedByUser");
     const keys = await db
       .select({
         id: apiKeys.id,
@@ -20,8 +23,10 @@ export const listApiKeys = authRequiredProcedure
         keyPrefix: apiKeys.keyPrefix,
         createdAt: apiKeys.createdAt,
         lastUsedAt: apiKeys.lastUsedAt,
+        revokedBy: revokedByUser.slackId,
       })
       .from(apiKeys)
+      .leftJoin(revokedByUser, eq(apiKeys.revokedBy, revokedByUser.id))
       .where(eq(apiKeys.owner, userId));
 
     const keysWithChannels = await Promise.all(
