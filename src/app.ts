@@ -474,7 +474,14 @@ app.use("/api/*", async (c, next) => {
     } catch {}
   }
 
-  const ctx: ORPCContext = { store, session, apiKey, databaseUrl: dbUrl };
+  const ctx: ORPCContext = {
+    store,
+    session,
+    apiKey,
+    databaseUrl: dbUrl,
+    slackToken: c.env.SLACK_BOT_TOKEN || "",
+    lockdownUsers: (c.env.LOCKDOWN_USERS || "").split(",").map((s: string) => s.trim()).filter(Boolean),
+  };
 
   const { matched: openMatched, response: openResponse } = await openAPIHandler.handle(c.req.raw, {
     prefix: "/api",

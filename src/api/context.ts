@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import { os } from "@orpc/server";
+import { WebClient } from "@slack/web-api";
 import type { Store } from "../store/store";
 import type { ApiKeyIdentity } from "../lib/api-keys";
 
@@ -18,6 +19,8 @@ export interface ORPCContext {
   session: SessionIdentity | null;
   apiKey: ApiKeyIdentity | null;
   databaseUrl: string;
+  slackToken: string;
+  lockdownUsers: string[];
 }
 
 const base = os.$context<ORPCContext>();
@@ -58,3 +61,18 @@ export const authOrApiKeyProcedure = base.use(async ({ context, next }) => {
   }
   return next();
 });
+
+export async function isChannelManager(channelId: string, userId: string, slackToken: string): Promise<boolean> {
+  if (!slackToken) return false;
+  const slack = new WebClient(slackToken);
+  try {
+    const conv = await slack.conversations.info({ channel: channelId });
+    if ((conv.channel as any)?.creator === userId) return true;
+  } catch {}
+  try {
+    const user = await slack.users.info({ user: userId });
+    const u = user.user as any;
+    if (u?.is_admin || u?.is_owner || u?.is_primary_owner) return true;
+  } catch {}
+  return false;
+}
