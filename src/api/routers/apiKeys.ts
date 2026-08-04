@@ -7,7 +7,6 @@ import { apiKeys, apiKeyChannels, authUser } from "../../db/schema";
 import { eq } from "drizzle-orm";
 import { aliasedTable } from "drizzle-orm/alias";
 
-
 export const listApiKeys = authRequiredProcedure
   .route({ method: "GET", path: "/api-keys" })
   .handler(async ({ context }) => {

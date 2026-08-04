@@ -22,7 +22,7 @@ function Navbar({ active }: { active: string }) {
           localStorage.setItem("gh_stars_at", String(Date.now()));
         }
       })
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   return (
@@ -35,7 +35,7 @@ function Navbar({ active }: { active: string }) {
           feed map
         </a>
         <a href="/docs.html" class={active === "docs" ? "active" : ""}>
-          api
+          api docs
         </a>
         <a href="/usage.html" class={active === "usage" ? "active" : ""}>
           usage
