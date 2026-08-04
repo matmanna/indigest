@@ -2,8 +2,11 @@ import Markdown from 'react-markdown'
 import {createRoot} from 'react-dom/client'
 import remarkGfm from 'remark-gfm'
 import './lockdown'
+import { renderNavbar } from "./navbar"
 
-const markdown = `# Slack Usage
+renderNavbar("usage")
+
+const markdown = `# Slack Bot Usage
 
 Slash commands for managing indigest channels. Run these in Slack like:
 
@@ -69,15 +72,6 @@ If you want to add an older message to the feed without waiting for the Yep!/No 
 ## Status
 
 - \`/in status\` — Show channel status, feeds, and permissions.`;
-
-document.getElementById("navbar")!.innerHTML = `<nav class="navbar">
-  <a href="/" class="navbar-brand">indigest</a>
-  <div class="navbar-links">
-    <a href="/" class="active">feed map</a>
-        <a href="/usage.html">usage</a>
-    <a href="/docs.html">api docs</a>
-  </div>
-</nav>`;
 
 createRoot(document.getElementById("app")!).render(
   <div className="markdown-body">

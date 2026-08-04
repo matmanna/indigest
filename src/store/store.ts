@@ -7,6 +7,7 @@ export interface StoreChannel {
   webhookUrl: string;
   autoApproveUsers: string[];
   approvedPosters: string[];
+  accessPermUsers: string[];
   trackReplies: boolean;
   metadataSchema: string;
   createdAt: string;
@@ -56,5 +57,6 @@ export interface Store {
   getRecentMessages(channelId: string, since: Date): Promise<StoreMessage[]>;
   addBotAction(action: StoreBotAction): Promise<void>;
   getBotActionsBySource(sourceChannelId: string, sourceMessageTs: string): Promise<StoreBotAction[]>;
+  getGraphData(): Promise<{ channels: StoreChannel[]; subscriptions: StoreSubscription[]; subscriberChannels: StoreChannel[] }>;
   close(): void;
 }

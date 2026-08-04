@@ -25,11 +25,15 @@ function renderLockdownBanner(users: LockdownUser[]) {
     if (index < users.length - 1) banner.appendChild(document.createTextNode(", "));
   });
 
-  banner.appendChild(document.createTextNode(") to configure the bot."));
+  banner.appendChild(document.createTextNode(") to configure the bot"));
   document.body.insertBefore(banner, document.body.firstChild);
 }
 
 fetch("/site-config")
   .then((response): Promise<{ lockdownUsers: LockdownUser[] }> | null => response.ok ? response.json() : null)
-  .then((config) => renderLockdownBanner(config?.lockdownUsers || []))
+  .then((config) => {
+    const users = config?.lockdownUsers || [];
+    if (users.length === 0 || !document.body) return;
+    renderLockdownBanner(users);
+  })
   .catch(() => {});

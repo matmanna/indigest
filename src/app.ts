@@ -1,9 +1,25 @@
 import { Hono } from "hono";
 import { WebClient } from "@slack/web-api";
+import { getAuth } from "./lib/auth"
 import { Feed } from "feed";
 import type { Store, StoreChannel, StoreMessage, StoreSubscription } from "./store/store";
+import { OpenAPIHandler } from "@orpc/openapi/fetch";
+import { OpenAPIGenerator } from "@orpc/openapi";
+import { RPCHandler } from "@orpc/server/fetch";
+import { ZodSmartCoercionPlugin } from "@orpc/zod";
+import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
+import { router } from "./api/router";
+import type { ORPCContext } from "./api/context";
+import { createApiKeyContext } from "./lib/api-keys";
+import { getDb } from "./db";
+import * as schema from "./db/schema";
+import { eq } from "drizzle-orm";
 
 // --- Helpers ---
+
+function getDbUrl(env: Env): string {
+  return env.HYPERDRIVE_BINDING?.connectionString || env.DATABASE_URL;
+}
 
 function slackTsToTime(ts: string): Date {
   const parts = ts.split(".");
@@ -167,6 +183,51 @@ function isSlackPermalink(text: string): boolean {
          /^https:\/\/[a-z0-9-]+\.slack\.com\/archives\/[A-Z0-9]+\/p\d+$/.test(trimmed);
 }
 
+// --- Feed access control ---
+
+interface FeedIdentity {
+  type: "session" | "apikey";
+  slackId: string;
+}
+
+async function resolveFeedIdentity(c: any, env: Env): Promise<FeedIdentity | null> {
+  const dbUrl = getDbUrl(env);
+
+  // 1. Try session from cookie
+  try {
+    const auth = getAuth(dbUrl, env as any);
+    const s = await auth.api.getSession({ headers: c.req.raw.headers });
+    if (s?.user && (s.user as any).slackId) {
+      return { type: "session", slackId: (s.user as any).slackId };
+    }
+  } catch {}
+
+  // 2. Try API key from header or ?api_key= param
+  const authHeader = c.req.header("Authorization") || "";
+  const queryKey = c.req.query("api_key") || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : queryKey;
+  if (token && token.startsWith("ind_")) {
+    try {
+      const identity = await createApiKeyContext({ req: c.req.raw, databaseUrl: dbUrl });
+      if (identity.owner) {
+        const db = getDb(dbUrl);
+        const users = await db.select({ slackId: schema.authUser.slackId }).from(schema.authUser).where(eq(schema.authUser.id, identity.owner));
+        if (users[0]?.slackId) {
+          return { type: "apikey", slackId: users[0].slackId };
+        }
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+function canAccessFeed(ch: StoreChannel, identity: FeedIdentity | null): boolean {
+  if (ch.accessPermUsers.includes("*")) return true;
+  if (!identity) return false;
+  return ch.accessPermUsers.includes(identity.slackId);
+}
+
 async function forwardToSubscribers(
   msg: StoreMessage,
   sourceChannel: StoreChannel,
@@ -305,22 +366,21 @@ async function forwardToSubscribers(
 
     try {
       if (sourceChannel.linkMode) {
-        // Keep the raw permalink in the top-level text so Slack generates its unfurl.
-        const linkBlocks: any[] = [];
-        if (metadataSection) {
-          linkBlocks.push({ type: "section", text: { type: "mrkdwn", text: metadataSection.trim() } });
-        }
-        linkBlocks.push({ type: "section", text: { type: "mrkdwn", text: footerText } });
         const res = await slack.chat.postMessage({
           channel: sub.subscriberChannelId,
           username: postUsername,
           icon_url: postIcon,
-          unfurl_links: !metadataSection,
-          unfurl_media: !metadataSection,
+          unfurl_links: true,
+          unfurl_media: true,
           text: metadataSection
-            ? metadataSection.trim()
+            ? metadataSection.trim() + "\n" + footerText
             : (forwardLink || footerText),
-          blocks: linkBlocks,
+          blocks: metadataSection
+            ? [
+                { type: "section", text: { type: "mrkdwn", text: metadataSection.trim() } },
+                { type: "section", text: { type: "mrkdwn", text: footerText } },
+              ]
+            : undefined,
         } as any);
         if (res?.ts) {
           await store.addBotAction({ type: "pub", sourceChannelId: msg.channelId, sourceMessageTs: msg.slackTs, botChannelId: sub.subscriberChannelId, botMessageTs: res.ts, createdAt: "" });
@@ -373,47 +433,154 @@ async function forwardToSubscribers(
 
 const app = new Hono<{ Bindings: Env }>();
 
-// Public site configuration used by the static frontend.
-app.get("/site-config", async (c) => {
-  const env = c.env;
-  const ids = (env.LOCKDOWN_USERS || "").split(",").map((id) => id.trim()).filter(Boolean);
-  if (ids.length === 0) return c.json({ lockdownUsers: [] });
-
-  const slack = new WebClient(env.SLACK_BOT_TOKEN);
-  const lockdownUsers = await Promise.all(ids.map(async (id) => {
-    let name = id;
-    try {
-      const response = await slack.users.info({ user: id });
-      const user = response.user as any;
-      name = user?.profile?.display_name || user?.name || user?.real_name || id;
-    } catch {}
-    return {
-      id,
-      name,
-      url: `https://hackclub.enterprise.slack.com/team/${id}`,
-    };
-  }));
-
-  return c.json({ lockdownUsers });
+// --- oRPC ---
+const openAPIHandler = new OpenAPIHandler(router, {
+  plugins: [new ZodSmartCoercionPlugin()],
 });
 
-// Middleware: Basic Auth for /api routes
+const rpcHandler = new RPCHandler(router, {
+  plugins: [new ZodSmartCoercionPlugin()],
+});
+
+const openAPIGenerator = new OpenAPIGenerator({
+  schemaConverters: [new ZodToJsonSchemaConverter()],
+});
+
 app.use("/api/*", async (c, next) => {
+  if (c.req.path.startsWith("/api/auth/")) return next();
+
+  const dbUrl = getDbUrl(c.env);
+  const store = await getStore(dbUrl);
+
+  let session: ORPCContext["session"] = null;
+  let apiKey: ORPCContext["apiKey"] = null;
+
+  // Resolve session from cookies
+  try {
+    const auth = getAuth(dbUrl, c.env as any);
+    const s = await auth.api.getSession({ headers: c.req.raw.headers });
+    if (s?.user) {
+      session = { user: s.user as any };
+    }
+  } catch (err: any) {
+    console.error("Session resolution error:", err.message);
+  }
+
+  // Resolve API key from Bearer token (if present)
+  const authHeader = c.req.header("Authorization") || "";
+  if (authHeader.startsWith("Bearer ")) {
+    try {
+      apiKey = await createApiKeyContext({ req: c.req.raw, databaseUrl: dbUrl });
+    } catch {}
+  }
+
+  const ctx: ORPCContext = { store, session, apiKey, databaseUrl: dbUrl };
+
+  const { matched: openMatched, response: openResponse } = await openAPIHandler.handle(c.req.raw, {
+    prefix: "/api",
+    context: ctx,
+  });
+  if (openMatched) return c.newResponse(openResponse.body, openResponse);
+
+  const { matched: rpcMatched, response: rpcResponse } = await rpcHandler.handle(c.req.raw, {
+    context: ctx,
+    prefix: "/api",
+  });
+  if (rpcMatched) return c.newResponse(rpcResponse.body, rpcResponse);
+  await next();
+});
+
+app.get("/docs", (c) => {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Indigest API</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+    <script>
+      Scalar.createApiReference('#app', {
+        url: '/spec.json',
+        authentication: {
+          preferredSecurityScheme: 'BearerAuth',
+        },
+      })
+    </script>
+  </body>
+</html>`;
+  return c.html(html);
+});
+
+let authDbReady: Record<string, Promise<void>> = {};
+app.on(["POST", "GET"], "/api/auth/*", async (c) => {
+  try {
+    const dbUrl = getDbUrl(c.env);
+    if (!authDbReady[dbUrl]) {
+      authDbReady[dbUrl] = (async () => {
+        const { pushSchema } = await import("./db/migrate");
+        await pushSchema(dbUrl);
+      })();
+    }
+    await authDbReady[dbUrl];
+    const auth = getAuth(dbUrl, c.env as any);
+    return auth.handler(c.req.raw);
+  } catch (err: any) {
+    console.error("Auth handler error:", err.message, err.stack);
+    return c.json({ error: "auth handler failed" }, 500);
+  }
+});
+
+
+// GitHub stars cache
+let cachedStars: number | null = null;
+let starsFetchedAt = 0;
+const STARS_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+async function getGithubStars(): Promise<number> {
+  if (cachedStars !== null && Date.now() - starsFetchedAt < STARS_CACHE_TTL) return cachedStars;
+  try {
+    const res = await fetch("https://api.github.com/repos/matmanna/indigest", {
+      headers: { "User-Agent": "indigest-bot", "Accept": "application/vnd.github.v3+json" },
+    });
+    const data = (await res.json()) as any;
+    if (typeof data.stargazers_count === "number") {
+      cachedStars = data.stargazers_count;
+      starsFetchedAt = Date.now();
+    }
+  } catch {}
+  if (cachedStars !== null) return cachedStars;
+  return 0;
+}
+
+// Public site configuration used by the static frontend.
+app.get("/site-config", async (c) => {
+  c.header("Cache-Control", "no-store");
   const env = c.env;
-  const apiPassword = env.API_PASSWORD || "";
-  if (!apiPassword) return next();
-  const apiUsername = env.API_USERNAME || "admin";
-  const header = c.req.header("Authorization") || "";
-  const match = header.match(/^Basic\s+(.+)$/);
-  if (!match) {
-    return c.text("Unauthorized", 401, { "WWW-Authenticate": "Basic realm=indigest" });
-  }
-  const decoded = atob(match[1]!);
-  const [user, pass] = decoded.split(":");
-  if (user !== apiUsername || pass !== apiPassword) {
-    return c.text("Unauthorized", 401, { "WWW-Authenticate": "Basic realm=indigest" });
-  }
-  return next();
+  const ids = (env.LOCKDOWN_USERS || "").split(",").map((id) => id.trim()).filter(Boolean);
+  const [lockdownUsers, githubStars] = await Promise.all([
+    ids.length === 0 ? Promise.resolve([]) : (async () => {
+      const slack = new WebClient(env.SLACK_BOT_TOKEN);
+      return Promise.all(ids.map(async (id) => {
+        let name = id;
+        try {
+          const response = await slack.users.info({ user: id });
+          const user = response.user as any;
+          name = user?.profile?.display_name || user?.name || user?.real_name || id;
+        } catch {}
+        return {
+          id,
+          name,
+          url: `https://hackclub.enterprise.slack.com/team/${id}`,
+        };
+      }));
+    })(),
+    getGithubStars(),
+  ]);
+
+  return c.json({ lockdownUsers, githubStars });
 });
 
 // === Scalar API Docs ===
@@ -421,18 +588,20 @@ app.get("/spec.json", (c) => {
   const spec = {
     openapi: "3.1.0",
     info: {
-      title: "indigest",
+      title: "Indigest API",
       version: "1.0.0",
       description: "A Slack bot that curates messages into digestible feeds",
     },
     servers: [{ url: "/" }],
+    security: [{ BearerAuth: [] }],
     paths: {
       "/feed/{channelId}": {
         get: {
           operationId: "getFeed",
           summary: "Get channel feed",
-          description: "Returns an RSS feed or JSON feed of messages for a channel",
+          description: "Returns an RSS feed or JSON feed of messages for a channel. Requires auth if accessPermUsers is not *.",
           tags: ["Feed"],
+          security: [{ BearerAuth: [] }, { session: [] }],
           parameters: [
             {
               name: "channelId",
@@ -451,10 +620,19 @@ app.get("/spec.json", (c) => {
               in: "query",
               schema: { type: "integer", default: 0 },
             },
+            {
+              name: "api_key",
+              in: "query",
+              schema: { type: "string" },
+              description: "API key (alternative to Authorization header)",
+            },
           ],
           responses: {
             "200": {
               description: "RSS feed (application/rss+xml) or JSON array depending on Accept header or .json suffix",
+            },
+            "403": {
+              description: "Forbidden — no access to this feed",
             },
           },
         },
@@ -463,9 +641,9 @@ app.get("/spec.json", (c) => {
         get: {
           operationId: "listMessages",
           summary: "List messages",
-          description: "List messages for a channel with filtering and pagination",
+          description: "List messages for a channel with filtering and pagination. Requires auth if accessPermUsers is not *.",
           tags: ["Messages"],
-          security: [{ basicAuth: [] }],
+          security: [{ BearerAuth: [] }, { session: [] }],
           parameters: [
             {
               name: "channel",
@@ -491,6 +669,12 @@ app.get("/spec.json", (c) => {
               in: "query",
               schema: { type: "string" },
               description: "Filter by Slack user ID",
+            },
+            {
+              name: "threadTs",
+              in: "query",
+              schema: { type: "string" },
+              description: "Filter by thread parent timestamp",
             },
             {
               name: "limit",
@@ -528,9 +712,9 @@ app.get("/spec.json", (c) => {
         get: {
           operationId: "getMessage",
           summary: "Get message",
-          description: "Get a single message by its Slack timestamp",
-          tags: ["API"],
-          security: [{ basicAuth: [] }],
+          description: "Get a single message by its Slack timestamp. Requires auth if accessPermUsers is not *.",
+          tags: ["Messages"],
+          security: [{ BearerAuth: [] }, { session: [] }],
           parameters: [
             {
               name: "slackTs",
@@ -627,12 +811,162 @@ app.get("/spec.json", (c) => {
           },
         },
       },
+      "/api/channels/by-user/{userId}": {
+        get: {
+          operationId: "listChannelsByUser",
+          summary: "List channels by user",
+          description: "List channels the user has access to based on accessPermUsers.",
+          tags: ["Channels"],
+          security: [{ BearerAuth: [] }, { session: [] }],
+          parameters: [
+            {
+              name: "userId",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+              description: "Better Auth user ID",
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Channels the user can access",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "array",
+                    items: { $ref: "#/components/schemas/Channel" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/api/subscriptions": {
+        get: {
+          operationId: "listSubscriptions",
+          summary: "List subscriptions",
+          description: "List all subscriber channels for a given source channel.",
+          tags: ["Subscriptions"],
+          parameters: [
+            {
+              name: "sourceChannelId",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+              description: "Source Slack channel ID",
+            },
+          ],
+          responses: {
+            "200": {
+              description: "List of subscriptions",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "array",
+                    items: { $ref: "#/components/schemas/Subscription" },
+                  },
+                },
+              },
+            },
+          },
+        },
+        post: {
+          operationId: "addSubscription",
+          summary: "Add subscription",
+          description: "Subscribe a channel to a source channel.",
+          tags: ["Subscriptions"],
+          security: [{ BearerAuth: [] }, { session: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["subscriberChannelId", "sourceChannelId"],
+                  properties: {
+                    subscriberChannelId: { type: "string", description: "Channel to receive forwards" },
+                    sourceChannelId: { type: "string", description: "Channel to forward from" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "Subscription created" },
+          },
+        },
+        delete: {
+          operationId: "removeSubscription",
+          summary: "Remove subscription",
+          description: "Unsubscribe a channel from a source channel.",
+          tags: ["Subscriptions"],
+          security: [{ BearerAuth: [] }, { session: [] }],
+          parameters: [
+            {
+              name: "subscriberChannelId",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+              description: "Channel to unsubscribe",
+            },
+            {
+              name: "sourceChannelId",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+              description: "Source channel to unsubscribe from",
+            },
+          ],
+          responses: {
+            "200": { description: "Subscription removed" },
+          },
+        },
+      },
+      "/api/subscriptions/by-subscriber": {
+        get: {
+          operationId: "listSubscriptionsBySubscriber",
+          summary: "List subscriptions by subscriber",
+          description: "List all source channels a subscriber channel is subscribed to.",
+          tags: ["Subscriptions"],
+          parameters: [
+            {
+              name: "subscriberChannelId",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+              description: "Subscriber Slack channel ID",
+            },
+          ],
+          responses: {
+            "200": {
+              description: "List of subscriptions",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "array",
+                    items: { $ref: "#/components/schemas/Subscription" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
     },
     components: {
       securitySchemes: {
-        basicAuth: {
+        BearerAuth: {
           type: "http",
-          scheme: "basic",
+          scheme: "bearer",
+          bearerFormat: "API Key",
+          description: "API key (ind_...)",
+        },
+        session: {
+          type: "apiKey",
+          in: "cookie",
+          name: "better-auth.session_token",
+          description: "Session cookie (browser login)",
         },
       },
       schemas: {
@@ -673,6 +1007,15 @@ app.get("/spec.json", (c) => {
             total_pages: { type: "integer" },
           },
         },
+        Subscription: {
+          type: "object",
+          properties: {
+            id: { type: "integer" },
+            subscriberChannelId: { type: "string" },
+            sourceChannelId: { type: "string" },
+            createdAt: { type: "string" },
+          },
+        },
       },
     },
   };
@@ -699,7 +1042,7 @@ app.post("/events", async (c) => {
   c.executionCtx.waitUntil((async () => {
     console.log("Received Slack event:", payload.event?.type, "thread_ts:", payload.event?.thread_ts, "channel:", payload.event?.channel);
     const ev = payload.event;
-    const store = await getStore(env.DATABASE_URL);
+    const store = await getStore(getDbUrl(env));
     const slack = new WebClient(env.SLACK_BOT_TOKEN);
 
     if (ev.type === "member_joined_channel") {
@@ -714,6 +1057,7 @@ app.post("/events", async (c) => {
         webhookUrl: "",
         autoApproveUsers: [],
         approvedPosters: [],
+        accessPermUsers: ["*"],
         trackReplies: false,
         metadataSchema: "",
         createdAt: "",
@@ -904,7 +1248,7 @@ app.post("/interactions", async (c) => {
   if (cb.type === "block_actions") {
     const action = cb.actions?.[0];
     if (action?.action_id === "indigest_metadata") {
-      const store = await getStore(env.DATABASE_URL);
+      const store = await getStore(getDbUrl(env));
       const slack = new WebClient(env.SLACK_BOT_TOKEN);
       const channelId = cb.channel?.id;
       const messageTs = action.value;
@@ -950,7 +1294,7 @@ app.post("/interactions", async (c) => {
   });
 
   c.executionCtx.waitUntil((async () => {
-  const store = await getStore(env.DATABASE_URL);
+  const store = await getStore(getDbUrl(env));
   const slack = new WebClient(env.SLACK_BOT_TOKEN);
 
   if (cb.type === "view_submission" && cb.view?.callback_id === "metadata_modal") {
@@ -1054,7 +1398,7 @@ app.post("/interactions", async (c) => {
 
       // Also forward to any new subscribers that weren't captured in the initial forward
       await forwardToSubscribers({ slackTs: messageTs, channelId, userId: msg.user || "", userName, text: msg.text || "", timestamp: slackTsToTime(messageTs).toISOString(), metadata }, channel, store, slack);
-      if (channel.linkMode) await postPermalinkReply(client, channelId, messageTs);
+      // if (channel.linkMode) await postPermalinkReply(client, channelId, messageTs);
 
       // Update the bot's prompt to show approved state
       if (botMessageTs) {
@@ -1101,7 +1445,7 @@ app.post("/interactions", async (c) => {
     }
 
     c.executionCtx.waitUntil((async () => {
-      const store = await getStore(env.DATABASE_URL);
+      const store = await getStore(getDbUrl(env));
       const slack = new WebClient(env.SLACK_BOT_TOKEN);
 
       const lockdownUsers = (env.LOCKDOWN_USERS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
@@ -1260,7 +1604,7 @@ app.post("/interactions", async (c) => {
       const savedMsg = { slackTs: messageTs, channelId, userId: msg.user || "", userName, text: msg.text || "", timestamp: slackTsToTime(messageTs).toISOString(), metadata: {} };
       await fireWebhook(ch, savedMsg);
       await forwardToSubscribers(savedMsg, ch, store, slack);
-      if (ch.linkMode) await postPermalinkReply(slack, channelId, messageTs);
+      // if (ch.linkMode) await postPermalinkReply(slack, channelId, messageTs);
 
       // Update the bot's prompt to show approved state
       if (botMessageTs) {
@@ -1362,9 +1706,9 @@ const slackSlashCommand = async (c: any) => {
   c.res = new Response(JSON.stringify({ response_type: "ephemeral", text: "⏳ Processing..." }), { status: 200, headers: c.res.headers });
 
   c.executionCtx.waitUntil((async () => {
-  const store = await getStore(env.DATABASE_URL);
+  const store = await getStore(getDbUrl(env));
   const slack = new WebClient(env.SLACK_BOT_TOKEN);
-  const baseUrl = env.BASE_URL || "http://localhost:8080";
+  const baseUrl = env.BASE_URL || "http://localhost:8787";
   const lockdownUsers = (env.LOCKDOWN_USERS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
 
   const channelRefMatch = text.match(/^(<#(\w+)(\|[^>]*)?>|#(\S+))\s*(.*)$/);
@@ -1406,7 +1750,7 @@ const slackSlashCommand = async (c: any) => {
       name = (conv.channel as any)?.name || targetChannelId;
     } catch {}
     const auth = await slack.auth.test();
-    ch = { id: targetChannelId, name, teamId: auth.team_id || "", enabled: false, linkMode: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], trackReplies: false, metadataSchema: "", createdAt: "" };
+    ch = { id: targetChannelId, name, teamId: auth.team_id || "", enabled: false, linkMode: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], accessPermUsers: ["*"], trackReplies: false, metadataSchema: "", createdAt: "" };
     await store.upsertChannel(ch);
   }
 
@@ -1902,10 +2246,15 @@ app.get("/feed/:channelId", async (c) => {
     const rawId = c.req.param("channelId")!;
     const wantsJson = rawId.endsWith(".json") || c.req.header("accept")?.includes("application/json");
     const channelId = wantsJson ? rawId.replace(/\.json$/, "") : rawId;
-    const store = await getStore(env.DATABASE_URL);
+    const store = await getStore(getDbUrl(env));
     const ch = await store.getChannel(channelId);
     if (!ch || !ch.enabled) {
       return c.json({ error: "not found", id: channelId }, 404);
+    }
+
+    const identity = await resolveFeedIdentity(c, env);
+    if (!canAccessFeed(ch, identity)) {
+      return c.json({ error: "forbidden", message: "You don't have access to this feed" }, 403);
     }
 
     const limit = Math.min(parseInt(c.req.query("limit") || "50") || 50, 200);
@@ -1916,7 +2265,7 @@ app.get("/feed/:channelId", async (c) => {
       return c.json(msgs);
     }
 
-    const baseUrl = env.BASE_URL || "http://localhost:8080";
+    const baseUrl = env.BASE_URL || "http://localhost:8787";
     const feed = new Feed({
       title: `#${ch.name} — indigest`,
       link: `${baseUrl}/feed/${channelId}`,
@@ -1944,7 +2293,7 @@ app.get("/feed/:channelId", async (c) => {
 // === REST API ===
 app.get("/api/messages", async (c) => {
   const env = c.env;
-  const store = await getStore(env.DATABASE_URL);
+  const store = await getStore(getDbUrl(env));
   const channel = c.req.query("channel");
   if (!channel) {
     return c.json({ error: "channel is required" }, 400);
@@ -1955,9 +2304,15 @@ app.get("/api/messages", async (c) => {
     return c.json({ error: "channel not found or not enabled" }, 404);
   }
 
+  const identity = await resolveFeedIdentity(c, env);
+  if (!canAccessFeed(ch, identity)) {
+    return c.json({ error: "forbidden", message: "You don't have access to this channel" }, 403);
+  }
+
   const after = c.req.query("after");
   const before = c.req.query("before");
   const userId = c.req.query("userId");
+  const threadTs = c.req.query("threadTs");
   const limit = Math.min(parseInt(c.req.query("limit") || "50") || 50, 10000);
   const page = parseInt(c.req.query("page") || "1") || 1;
 
@@ -1967,6 +2322,7 @@ app.get("/api/messages", async (c) => {
   if (after) filtered = filtered.filter((m) => m.timestamp >= after);
   if (before) filtered = filtered.filter((m) => m.timestamp <= before);
   if (userId) filtered = filtered.filter((m) => m.userId === userId);
+  if (threadTs) filtered = filtered.filter((m) => m.threadTs === threadTs);
 
   const total = filtered.length;
   const offset = (page - 1) * limit;
@@ -1980,12 +2336,22 @@ app.get("/api/messages", async (c) => {
 
 app.get("/api/messages/:slackTs", async (c) => {
   const env = c.env;
-  const store = await getStore(env.DATABASE_URL);
+  const store = await getStore(getDbUrl(env));
   const slackTs = decodeURIComponent(c.req.param("slackTs"));
   const channel = c.req.query("channel") || "";
 
   if (!channel) {
     return c.json({ error: "channel is required" }, 400);
+  }
+
+  const ch = await store.getChannel(channel);
+  if (!ch || !ch.enabled) {
+    return c.json({ error: "channel not found or not enabled" }, 404);
+  }
+
+  const identity = await resolveFeedIdentity(c, env);
+  if (!canAccessFeed(ch, identity)) {
+    return c.json({ error: "forbidden", message: "You don't have access to this channel" }, 403);
   }
 
   const all = await store.getMessages(channel, 100000, 0);
@@ -1999,14 +2365,14 @@ app.get("/api/messages/:slackTs", async (c) => {
 
 app.get("/api/channels", async (c) => {
   const env = c.env;
-  const store = await getStore(env.DATABASE_URL);
+  const store = await getStore(getDbUrl(env));
   const channels = await store.listChannels();
   return c.json({ data: channels });
 });
 
 app.get("/api/channels/:id", async (c) => {
   const env = c.env;
-  const store = await getStore(env.DATABASE_URL);
+  const store = await getStore(getDbUrl(env));
   const id = decodeURIComponent(c.req.param("id"));
   const ch = await store.getChannel(id);
   if (!ch) return c.json({ error: "channel not found" }, 404);
@@ -2014,11 +2380,33 @@ app.get("/api/channels/:id", async (c) => {
 });
 
 // --- Graph API (for React Flow diagram) ---
+let cachedGraph: { data: any; at: number } | null = null;
+const GRAPH_CACHE_TTL = 60_000; // 1 minute
+
 app.get("/api/graph", async (c) => {
   const env = c.env;
-  const store = await getStore(env.DATABASE_URL);
 
-  const channels = await store.listEnabledChannels();
+  if (cachedGraph && Date.now() - cachedGraph.at < GRAPH_CACHE_TTL) {
+    return c.json(cachedGraph.data);
+  }
+
+  const store = await getStore(getDbUrl(env));
+
+  const { channels, subscriptions, subscriberChannels } = await store.getGraphData();
+
+  // Index channels by ID for fast lookup
+  const channelMap = new Map<string, StoreChannel>();
+  for (const ch of channels) channelMap.set(ch.id, ch);
+  for (const ch of subscriberChannels) channelMap.set(ch.id, ch);
+
+  // Index subscriptions by source channel
+  const subsBySource = new Map<string, StoreSubscription[]>();
+  for (const sub of subscriptions) {
+    const list = subsBySource.get(sub.sourceChannelId) || [];
+    list.push(sub);
+    subsBySource.set(sub.sourceChannelId, list);
+  }
+
   const nodes: Array<{ id: string; type: string; label: string; data: Record<string, any> }> = [];
   const edges: Array<{ id: string; source: string; target: string; label?: string; animated: boolean }> = [];
 
@@ -2032,9 +2420,10 @@ app.get("/api/graph", async (c) => {
       nodes.push({ id: `wh:${ch.id}`, type: "feed", label: "Webhook", data: { feedType: "webhook", channelId: ch.id, url: ch.webhookUrl } });
       edges.push({ id: `e-wh-${ch.id}`, source: `ch:${ch.id}`, target: `wh:${ch.id}`, animated: true });
     }
-    const subscribers = await store.getSubscribersBySource(ch.id);
-    for (const sub of subscribers) {
-      const subCh = await store.getChannel(sub.subscriberChannelId);
+
+    const subs = subsBySource.get(ch.id) || [];
+    for (const sub of subs) {
+      const subCh = channelMap.get(sub.subscriberChannelId);
       const subLabel = subCh ? `#${subCh.name || subCh.id}` : sub.subscriberChannelId;
       if (!nodes.find((n) => n.id === `sub:${sub.subscriberChannelId}`)) {
         nodes.push({ id: `sub:${sub.subscriberChannelId}`, type: "subscriber", label: subLabel, data: { channelId: sub.subscriberChannelId, name: subCh?.name, webhookUrl: subCh?.webhookUrl, metadataSchema: subCh?.metadataSchema, trackReplies: subCh?.trackReplies, approvedPosters: subCh?.approvedPosters, autoApproveUsers: subCh?.autoApproveUsers?.join(", ") || "", enabled: subCh?.enabled, linkMode: subCh?.linkMode, createdAt: subCh?.createdAt } });
@@ -2043,7 +2432,9 @@ app.get("/api/graph", async (c) => {
     }
   }
 
-  return c.json({ data: { nodes, edges } });
+  const result = { data: { nodes, edges } };
+  cachedGraph = { data: result, at: Date.now() };
+  return c.json(result);
 });
 
 // --- Store (lazy singleton per DB URL) ---
@@ -2101,6 +2492,7 @@ function retryingStore(store: Store): Store {
     getRecentMessages: (channelId, since) => withRetry(() => store.getRecentMessages(channelId, since)),
     addBotAction: (action) => withRetry(() => store.addBotAction(action)),
     getBotActionsBySource: (sourceChannelId, sourceMessageTs) => withRetry(() => store.getBotActionsBySource(sourceChannelId, sourceMessageTs)),
+    getGraphData: () => withRetry(() => store.getGraphData()),
     close: () => store.close(),
   };
 }

@@ -13,6 +13,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "./lockdown";
+import { renderNavbar } from "./navbar"
 
 const TEAM_ID = "T024F7C8B";
 const slackLink = (channelId: string) =>
@@ -42,15 +43,7 @@ const highlightJson = (json: string): string =>
     }
   );
 
-document.getElementById("navbar")!.innerHTML = `<nav class="navbar">
-  <a href="/" class="navbar-brand">indigest</a>
-  <div class="navbar-links">
-    <a href="/" class="active">feed map</a>
-      <a href="/usage.html">usage</a>
-    <a href="/docs.html">api docs</a>
-
-  </div>
-</nav>`;
+renderNavbar("map")
 
 interface GraphNode { id: string; type: string; label: string; data: Record<string, any>; }
 interface GraphEdge { id: string; source: string; target: string; label?: string; animated: boolean; }

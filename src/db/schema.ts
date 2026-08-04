@@ -1,4 +1,5 @@
-import { pgTable, text, integer, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, jsonb, boolean, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { relations } from "drizzle-orm";
 
 export const channels = pgTable("channels", {
   id: text("id").primaryKey(),
@@ -12,6 +13,7 @@ export const channels = pgTable("channels", {
   trackReplies: text("track_replies").notNull().default("public"),
   metadataSchema: text("metadata_schema").notNull().default(""),
   createdAt: text("created_at").notNull().default("now()"),
+  accessPermUsers: text("access_perm_users").notNull().default("*"),
 });
 
 export const messages = pgTable(
@@ -25,7 +27,7 @@ export const messages = pgTable(
     text: text("text").notNull().default(""),
     threadTs: text("thread_ts"),
     timestamp: text("timestamp").notNull(),
-    metadata: jsonb("metadata").notNull().default("{}"),
+    metadata: text("metadata").notNull().default("{}"),
   },
   (t) => ({
     uniqueMsg: uniqueIndex("uq_messages_channel_ts").on(t.channelId, t.slackTs),
@@ -50,6 +52,7 @@ export const subscriptions = pgTable(
 export const botActions = pgTable(
   "bot_actions",
   {
+
     id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
     type: text("type").notNull(),
     sourceChannelId: text("source_channel_id").notNull(),
@@ -62,3 +65,101 @@ export const botActions = pgTable(
     sourceIdx: index("idx_bot_actions_source").on(t.sourceChannelId, t.sourceMessageTs),
   }),
 );
+
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    name: text("name").notNull(),
+    owner: text("created_by_slack_id").references(() => authUser.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    revokedBy: text("revoked_by_slack_id").references(() => authUser.id),
+        keyPrefix: text("key_prefix").notNull().unique(),
+    secretHash: text("secret_hash").notNull(),
+    lastUsedAt: timestamp("last_used_at"),   
+   // expiresAt: timestamp("expires_at", { mode: "date" }),
+  }
+)
+
+export const apiKeyChannels = pgTable(
+  "api_key_channels",
+  {
+    id:  integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    keyId: integer("key_id").references(() => apiKeys.id),
+    channelId: text("channel_id").references(() => channels.id)
+  }
+)
+
+// --- Better Auth tables ---
+
+export const authUser = pgTable("auth_user", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: boolean("email_verified").default(false).notNull(),
+  image: text("image"),
+  slackId: text("slack_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().$onUpdate(() => new Date()).notNull(),
+});
+
+export const authSession = pgTable(
+  "auth_session",
+  {
+    id: text("id").primaryKey(),
+    expiresAt: timestamp("expires_at").notNull(),
+    token: text("token").notNull().unique(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").$onUpdate(() => new Date()).notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: text("user_id").notNull().references(() => authUser.id, { onDelete: "cascade" }),
+  },
+  (t) => [index("auth_session_userId_idx").on(t.userId)],
+);
+
+export const authAccount = pgTable(
+  "auth_account",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    userId: text("user_id").notNull().references(() => authUser.id, { onDelete: "cascade" }),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: timestamp("access_token_expires_at"),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").$onUpdate(() => new Date()).notNull(),
+  },
+  (t) => [index("auth_account_userId_idx").on(t.userId)],
+);
+
+export const authVerification = pgTable(
+  "auth_verification",
+  {
+    id: text("id").primaryKey(),
+    identifier: text("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().$onUpdate(() => new Date()).notNull(),
+  },
+  (t) => [index("auth_verification_identifier_idx").on(t.identifier)],
+);
+
+export const authUserRelations = relations(authUser, ({ many }) => ({
+  sessions: many(authSession),
+  accounts: many(authAccount),
+}));
+
+export const authSessionRelations = relations(authSession, ({ one }) => ({
+  user: one(authUser, { fields: [authSession.userId], references: [authUser.id] }),
+}));
+
+export const authAccountRelations = relations(authAccount, ({ one }) => ({
+  user: one(authUser, { fields: [authAccount.userId], references: [authUser.id] }),
+}));

@@ -1,6 +1,6 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { eq, sql, and } from "drizzle-orm";
+import { eq, sql, and, inArray } from "drizzle-orm";
 import * as schema from "../db/schema";
 import type { Store, StoreChannel, StoreMessage, StoreSubscription, StoreBotAction } from "./store";
 
@@ -17,7 +17,7 @@ export class PostgresStore implements Store {
     const rows = await this.db.select().from(schema.channels).where(eq(schema.channels.id, id)).limit(1);
     if (rows.length === 0) return null;
     const r = rows[0]!;
-    return { id: r.id, name: r.name, teamId: r.teamId, enabled: Boolean(r.enabled), linkMode: Boolean(r.linkMode), webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt };
+    return { accessPermUsers: r.accessPermUsers ? r.accessPermUsers.split(",").filter(Boolean) : ["*"], id: r.id, name: r.name, teamId: r.teamId, enabled: Boolean(r.enabled), linkMode: Boolean(r.linkMode), webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt };
   }
 
   async upsertChannel(ch: StoreChannel): Promise<void> {
@@ -32,6 +32,7 @@ export class PostgresStore implements Store {
         webhookUrl: ch.webhookUrl,
         autoApproveUsers: ch.autoApproveUsers.join(","),
         approvedPosters: ch.approvedPosters.join(","),
+        accessPermUsers: ch.accessPermUsers.join(","),
         trackReplies: ch.trackReplies ? 1 : 0,
         metadataSchema: ch.metadataSchema,
         createdAt: sql`COALESCE((SELECT created_at FROM channels WHERE id = ${ch.id}), now()::text)`,
@@ -46,6 +47,7 @@ export class PostgresStore implements Store {
           webhookUrl: ch.webhookUrl,
           autoApproveUsers: ch.autoApproveUsers.join(","),
           approvedPosters: ch.approvedPosters.join(","),
+          accessPermUsers: ch.accessPermUsers.join(","),
           trackReplies: ch.trackReplies ? 1 : 0,
           metadataSchema: ch.metadataSchema,
         },
@@ -62,6 +64,7 @@ export class PostgresStore implements Store {
       linkMode: Boolean(r.linkMode),
       webhookUrl: r.webhookUrl,
       autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [],
+      accessPermUsers: r.accessPermUsers ? r.accessPermUsers.split(",").filter(Boolean) : [],
       approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [],
       trackReplies: Boolean(r.trackReplies),
       metadataSchema: r.metadataSchema,
@@ -71,7 +74,7 @@ export class PostgresStore implements Store {
 
   async listEnabledChannels(): Promise<StoreChannel[]> {
     const rows = await this.db.select().from(schema.channels).where(eq(schema.channels.enabled, 1));
-    return rows.map((r) => ({ id: r.id, name: r.name, teamId: r.teamId, enabled: true, linkMode: Boolean(r.linkMode), webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt }));
+    return rows.map((r) => ({ id: r.id, name: r.name, teamId: r.teamId, enabled: true, linkMode: Boolean(r.linkMode), webhookUrl: r.webhookUrl, autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [], approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [], accessPermUsers: r.accessPermUsers ? r.accessPermUsers.split(",").filter(Boolean) : [], trackReplies: Boolean(r.trackReplies), metadataSchema: r.metadataSchema, createdAt: r.createdAt }));
   }
 
   async upsertMessage(msg: StoreMessage): Promise<void> {
@@ -219,5 +222,50 @@ export class PostgresStore implements Store {
       botMessageTs: r.botMessageTs,
       createdAt: r.createdAt,
     }));
+  }
+
+  private rowToChannel(r: any): StoreChannel {
+    return {
+      id: r.id,
+      name: r.name,
+      teamId: r.teamId,
+      enabled: Boolean(r.enabled),
+      linkMode: Boolean(r.linkMode),
+      webhookUrl: r.webhookUrl,
+      autoApproveUsers: r.autoApproveUsers ? r.autoApproveUsers.split(",").filter(Boolean) : [],
+      approvedPosters: r.approvedPosters ? r.approvedPosters.split(",").filter(Boolean) : [],
+      accessPermUsers: r.accessPermUsers ? r.accessPermUsers.split(",").filter(Boolean) : [],
+      trackReplies: Boolean(r.trackReplies),
+      metadataSchema: r.metadataSchema,
+      createdAt: r.createdAt,
+    };
+  }
+
+  async getGraphData(): Promise<{ channels: StoreChannel[]; subscriptions: StoreSubscription[]; subscriberChannels: StoreChannel[] }> {
+    const [channelRows, subscriptionRows] = await Promise.all([
+      this.db.select().from(schema.channels),
+      this.db.select().from(schema.subscriptions),
+    ]);
+
+    const channels = channelRows.map((r) => this.rowToChannel(r));
+
+    // Find subscriber channels that aren't already in the channels list
+    const channelIds = new Set(channels.map((c) => c.id));
+    const subscriberChannelIds = [...new Set(subscriptionRows.map((r) => r.subscriberChannelId).filter((id) => !channelIds.has(id)))];
+
+    let subscriberChannels: StoreChannel[] = [];
+    if (subscriberChannelIds.length > 0) {
+      const subRows = await this.db.select().from(schema.channels).where(inArray(schema.channels.id, subscriberChannelIds));
+      subscriberChannels = subRows.map((r) => this.rowToChannel(r));
+    }
+
+    const subscriptions = subscriptionRows.map((r) => ({
+      id: r.id,
+      subscriberChannelId: r.subscriberChannelId,
+      sourceChannelId: r.sourceChannelId,
+      createdAt: r.createdAt,
+    }));
+
+    return { channels, subscriptions, subscriberChannels };
   }
 }

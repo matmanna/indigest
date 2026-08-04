@@ -24,6 +24,7 @@ export class NeonStore implements Store {
       webhookUrl: r.webhook_url,
       autoApproveUsers: r.auto_approve_users ? r.auto_approve_users.split(",").filter(Boolean) : [],
       approvedPosters: r.approved_posters ? r.approved_posters.split(",").filter(Boolean) : [],
+      accessPermUsers: r.access_perm_users ? r.access_perm_users.split(",").filter(Boolean) : ["*"],
       trackReplies: Boolean(r.track_replies),
       metadataSchema: r.metadata_schema,
       createdAt: r.created_at,
@@ -31,9 +32,9 @@ export class NeonStore implements Store {
   }
 
   async upsertChannel(ch: StoreChannel): Promise<void> {
-    await this.sql`INSERT INTO channels (id, name, team_id, enabled, link_mode, webhook_url, auto_approve_users, approved_posters, track_replies, metadata_schema, created_at)
-      VALUES (${ch.id}, ${ch.name}, ${ch.teamId}, ${ch.enabled ? 1 : 0}, ${ch.linkMode ? 1 : 0}, ${ch.webhookUrl}, ${ch.autoApproveUsers.join(",")}, ${ch.approvedPosters.join(",")}, ${ch.trackReplies ? 1 : 0}, ${ch.metadataSchema}, ${new Date().toISOString()})
-      ON CONFLICT (id) DO UPDATE SET name = ${ch.name}, team_id = ${ch.teamId}, enabled = ${ch.enabled ? 1 : 0}, link_mode = ${ch.linkMode ? 1 : 0}, webhook_url = ${ch.webhookUrl}, auto_approve_users = ${ch.autoApproveUsers.join(",")}, approved_posters = ${ch.approvedPosters.join(",")}, track_replies = ${ch.trackReplies ? 1 : 0}, metadata_schema = ${ch.metadataSchema}`;
+    await this.sql`INSERT INTO channels (id, name, team_id, enabled, link_mode, webhook_url, auto_approve_users, approved_posters, access_perm_users, track_replies, metadata_schema, created_at)
+      VALUES (${ch.id}, ${ch.name}, ${ch.teamId}, ${ch.enabled ? 1 : 0}, ${ch.linkMode ? 1 : 0}, ${ch.webhookUrl}, ${ch.autoApproveUsers.join(",")}, ${ch.approvedPosters.join(",")}, ${ch.accessPermUsers.join(",")}, ${ch.trackReplies ? 1 : 0}, ${ch.metadataSchema}, ${new Date().toISOString()})
+      ON CONFLICT (id) DO UPDATE SET name = ${ch.name}, team_id = ${ch.teamId}, enabled = ${ch.enabled ? 1 : 0}, link_mode = ${ch.linkMode ? 1 : 0}, webhook_url = ${ch.webhookUrl}, auto_approve_users = ${ch.autoApproveUsers.join(",")}, approved_posters = ${ch.approvedPosters.join(",")}, access_perm_users = ${ch.accessPermUsers.join(",")}, track_replies = ${ch.trackReplies ? 1 : 0}, metadata_schema = ${ch.metadataSchema}`;
   }
 
   async listChannels(): Promise<StoreChannel[]> {
@@ -46,6 +47,7 @@ export class NeonStore implements Store {
       webhookUrl: r.webhook_url,
       autoApproveUsers: r.auto_approve_users ? r.auto_approve_users.split(",").filter(Boolean) : [],
       approvedPosters: r.approved_posters ? r.approved_posters.split(",").filter(Boolean) : [],
+      accessPermUsers: r.access_perm_users ? r.access_perm_users.split(",").filter(Boolean) : ["*"],
       trackReplies: Boolean(r.track_replies),
       metadataSchema: r.metadata_schema,
       createdAt: r.created_at,
@@ -62,6 +64,7 @@ export class NeonStore implements Store {
       webhookUrl: r.webhook_url,
       autoApproveUsers: r.auto_approve_users ? r.auto_approve_users.split(",").filter(Boolean) : [],
       approvedPosters: r.approved_posters ? r.approved_posters.split(",").filter(Boolean) : [],
+      accessPermUsers: r.access_perm_users ? r.access_perm_users.split(",").filter(Boolean) : ["*"],
       trackReplies: Boolean(r.track_replies),
       metadataSchema: r.metadata_schema,
       createdAt: r.created_at,
@@ -154,5 +157,49 @@ export class NeonStore implements Store {
       botMessageTs: r.bot_message_ts,
       createdAt: r.created_at,
     }));
+  }
+
+  private rowToChannel(r: any): StoreChannel {
+    return {
+      id: r.id,
+      name: r.name,
+      teamId: r.team_id,
+      enabled: Boolean(r.enabled),
+      linkMode: Boolean(r.link_mode),
+      webhookUrl: r.webhook_url,
+      autoApproveUsers: r.auto_approve_users ? r.auto_approve_users.split(",").filter(Boolean) : [],
+      approvedPosters: r.approved_posters ? r.approved_posters.split(",").filter(Boolean) : [],
+      accessPermUsers: r.access_perm_users ? r.access_perm_users.split(",").filter(Boolean) : ["*"],
+      trackReplies: Boolean(r.track_replies),
+      metadataSchema: r.metadata_schema,
+      createdAt: r.created_at,
+    };
+  }
+
+  async getGraphData(): Promise<{ channels: StoreChannel[]; subscriptions: StoreSubscription[]; subscriberChannels: StoreChannel[] }> {
+    const [channelRows, subscriptionRows] = await Promise.all([
+      this.sql`SELECT * FROM channels`,
+      this.sql`SELECT * FROM subscriptions`,
+    ]);
+
+    const channels = rows(channelRows).map((r) => this.rowToChannel(r));
+
+    const channelIds = new Set(channels.map((c) => c.id));
+    const subscriberChannelIds = [...new Set(rows(subscriptionRows).map((r) => r.subscriber_channel_id).filter((id: string) => !channelIds.has(id)))];
+
+    let subscriberChannels: StoreChannel[] = [];
+    if (subscriberChannelIds.length > 0) {
+      const subRows = await this.sql`SELECT * FROM channels WHERE id = ANY(${subscriberChannelIds})`;
+      subscriberChannels = rows(subRows).map((r) => this.rowToChannel(r));
+    }
+
+    const subscriptions = rows(subscriptionRows).map((r) => ({
+      id: r.id,
+      subscriberChannelId: r.subscriber_channel_id,
+      sourceChannelId: r.source_channel_id,
+      createdAt: r.created_at,
+    }));
+
+    return { channels, subscriptions, subscriberChannels };
   }
 }

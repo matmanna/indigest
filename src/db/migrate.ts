@@ -95,5 +95,100 @@ export async function pushSchema(connectionString: string) {
     CREATE INDEX IF NOT EXISTS idx_bot_actions_source ON bot_actions(source_channel_id, source_message_ts)
   `);
 
+  // --- Better Auth tables ---
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS auth_user (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+      image TEXT,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS auth_session (
+      id TEXT PRIMARY KEY,
+      expires_at TIMESTAMP NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      ip_address TEXT,
+      user_agent TEXT,
+      user_id TEXT NOT NULL REFERENCES auth_user(id) ON DELETE CASCADE
+    )
+  `);
+
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS auth_session_userId_idx ON auth_session(user_id)
+  `);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS auth_account (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      user_id TEXT NOT NULL REFERENCES auth_user(id) ON DELETE CASCADE,
+      access_token TEXT,
+      refresh_token TEXT,
+      id_token TEXT,
+      access_token_expires_at TIMESTAMP,
+      refresh_token_expires_at TIMESTAMP,
+      scope TEXT,
+      password TEXT,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS auth_account_userId_idx ON auth_account(user_id)
+  `);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS auth_verification (
+      id TEXT PRIMARY KEY,
+      identifier TEXT NOT NULL,
+      value TEXT NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS auth_verification_identifier_idx ON auth_verification(identifier)
+  `);
+
+  try {
+    await db.execute(sql`ALTER TABLE auth_user ADD COLUMN IF NOT EXISTS slack_id TEXT`);
+  } catch {}
+
+  // --- API Key tables ---
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+      name TEXT NOT NULL,
+      created_by_slack_id TEXT REFERENCES auth_user(id),
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      revoked_by_slack_id TEXT REFERENCES auth_user(id),
+      key_prefix TEXT NOT NULL UNIQUE,
+      secret_hash TEXT NOT NULL,
+      last_used_at TIMESTAMP
+    )
+  `);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS api_key_channels (
+      id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+      key_id INTEGER REFERENCES api_keys(id),
+      channel_id TEXT REFERENCES channels(id)
+    )
+  `);
+
   await client.end();
 }
