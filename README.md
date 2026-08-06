@@ -54,14 +54,19 @@ _tldr: if you forget what to do, run `/in`_
 | `/in schema get`         | View current metadata schema                                         |
 | `/in schema clear`       | Remove metadata schema                                               |
 
-## permission structure
+## publishing 
+
+**manual, per-message, opt-in publishing:**
+
+<img width="916" height="205" alt="image" src="https://github.com/user-attachments/assets/d36b3cd8-5329-464f-abe7-f0795c1c779f" />
+
+**permission structure:**
 
 - **channel manager** - can run all commands unless lockdown mode enabled
 - **lockdown override** - listed in `LOCKDOWN_USERS`, can always run all commands
 - **channel member** - can only view `status` and public feed URLs
 
 <img width="712" height="329" alt="image" src="https://github.com/user-attachments/assets/d4c21942-2e7a-48ad-8044-1683f8841728" />
-
 
 ## subscriptions
 
@@ -72,7 +77,9 @@ if channel A subscrbies to channel B, when a message is approved in channel B, i
 
 ## setting metadata
 
-Channel creators can define a metadata form that opens in a **modal** when someone clicks **Yep!** on a message in manual mode.
+channel managers can define a metadata form that opens in a **modal** when someone clicks **Yep!** on a message in manual mode.
+
+<img width="804" height="685" alt="image" src="https://github.com/user-attachments/assets/10c2d72f-85b7-43f2-b5bb-ed222c6e25c1" />
 
 ```
 /in schema set {"title":"Message Metadata","fields":[
