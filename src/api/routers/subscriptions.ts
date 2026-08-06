@@ -5,19 +5,27 @@ import {
   authRequiredProcedure,
   isChannelManager,
 } from "../context";
+import {
+  getChannel as dbGetChannel,
+  getSubscribersBySource as dbGetSubscribersBySource,
+  getSubscriptionsBySubscriber as dbGetSubscriptionsBySubscriber,
+  addSubscription as dbAddSubscription,
+  removeSubscription as dbRemoveSubscription,
+} from "../../db/queries";
 
 export const listSubscriptions = publicProcedure
   .route({ method: "GET", path: "/subscriptions" })
   .input(z.object({ sourceChannelId: z.string().min(1) }))
   .handler(async ({ input, context }) => {
-    return context.store.getSubscribersBySource(input.sourceChannelId);
+    return dbGetSubscribersBySource(context.db, input.sourceChannelId);
   });
 
 export const listSubscriptionsBySubscriber = publicProcedure
   .route({ method: "GET", path: "/subscriptions/by-subscriber" })
   .input(z.object({ subscriberChannelId: z.string().min(1) }))
   .handler(async ({ input, context }) => {
-    return context.store.getSubscriptionsBySubscriber(
+    return dbGetSubscriptionsBySubscriber(
+      context.db,
       input.subscriberChannelId,
     );
   });
@@ -31,12 +39,12 @@ export const addSubscription = authRequiredProcedure
     }),
   )
   .handler(async ({ input, context }) => {
-    const source = await context.store.getChannel(input.sourceChannelId);
+    const source = await dbGetChannel(context.db, input.sourceChannelId);
     if (!source)
       throw new ORPCError("NOT_FOUND", {
         message: `Source channel ${input.sourceChannelId} not found`,
       });
-    const sub = await context.store.getChannel(input.subscriberChannelId);
+    const sub = await dbGetChannel(context.db, input.subscriberChannelId);
     if (!sub)
       throw new ORPCError("NOT_FOUND", {
         message: `Subscriber channel ${input.subscriberChannelId} not found`,
@@ -59,7 +67,8 @@ export const addSubscription = authRequiredProcedure
           "You must be a channel manager or lockdown user to add subscriptions",
       });
 
-    await context.store.addSubscription(
+    await dbAddSubscription(
+      context.db,
       input.subscriberChannelId,
       input.sourceChannelId,
     );
@@ -91,7 +100,8 @@ export const removeSubscription = authRequiredProcedure
           "You must be a channel manager or lockdown user to remove subscriptions",
       });
 
-    await context.store.removeSubscription(
+    await dbRemoveSubscription(
+      context.db,
       input.subscriberChannelId,
       input.sourceChannelId,
     );

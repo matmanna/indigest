@@ -5,6 +5,12 @@ import {
   authOrApiKeyProcedure,
   authRequiredProcedure,
 } from "../context";
+import {
+  getChannel as dbGetChannel,
+  listChannels as dbListChannels,
+  listEnabledChannels as dbListEnabledChannels,
+  upsertChannel as dbUpsertChannel,
+} from "../../db/queries";
 
 const channelSchema = z.object({
   id: z.string(),
@@ -30,8 +36,8 @@ export const listChannels = publicProcedure
   )
   .handler(async ({ input, context }) => {
     const channels = input.enabled
-      ? await context.store.listEnabledChannels()
-      : await context.store.listChannels();
+      ? await dbListEnabledChannels(context.db)
+      : await dbListChannels(context.db);
     return channels;
   });
 
@@ -39,7 +45,7 @@ export const getChannel = publicProcedure
   .route({ method: "GET", path: "/channels/{id}" })
   .input(z.object({ id: z.string().min(1) }))
   .handler(async ({ input, context }) => {
-    const ch = await context.store.getChannel(input.id);
+    const ch = await dbGetChannel(context.db, input.id);
     if (!ch) throw new ORPCError("Channel not found");
     return ch;
   });
@@ -48,7 +54,7 @@ export const upsertChannel = authRequiredProcedure
   .route({ method: "PUT", path: "/channels" })
   .input(channelSchema)
   .handler(async ({ input, context }) => {
-    await context.store.upsertChannel(input);
+    await dbUpsertChannel(context.db, input);
   });
 
 export const listByUser = authOrApiKeyProcedure
@@ -57,7 +63,7 @@ export const listByUser = authOrApiKeyProcedure
   .handler(async ({ input, context }) => {
     const slackId = context.session?.user?.slackId;
     if (!slackId) return [];
-    const channels = await context.store.listChannels();
+    const channels = await dbListChannels(context.db);
     return channels.filter(
       (ch) =>
         ch.accessPermUsers.includes(slackId) ||

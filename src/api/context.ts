@@ -1,7 +1,7 @@
 import { ORPCError } from "@orpc/server";
 import { os } from "@orpc/server";
 import { WebClient } from "@slack/web-api";
-import type { Store } from "../store/store";
+import type { DB } from "../db";
 import type { ApiKeyIdentity } from "../lib/api-keys";
 
 export interface SessionIdentity {
@@ -15,7 +15,7 @@ export interface SessionIdentity {
 }
 
 export interface ORPCContext {
-  store: Store;
+  db: DB;
   session: SessionIdentity | null;
   apiKey: ApiKeyIdentity | null;
   databaseUrl: string;

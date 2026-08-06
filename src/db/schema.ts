@@ -14,14 +14,14 @@ export const channels = pgTable("channels", {
   id: text("id").primaryKey(),
   name: text("name").notNull().default(""),
   teamId: text("team_id").notNull().default(""),
-  enabled: text("enabled").notNull().default("public"),
-  linkMode: integer("link_mode").notNull().default(0),
+  enabled: text("enabled").notNull().default("0"),
+  linkMode: text("link_mode").notNull().default("0"),
   webhookUrl: text("webhook_url").notNull().default(""),
   autoApproveUsers: text("auto_approve_users").notNull().default(""),
   approvedPosters: text("approved_posters").notNull().default(""),
-  trackReplies: text("track_replies").notNull().default("public"),
+  trackReplies: text("track_replies").notNull().default("0"),
   metadataSchema: text("metadata_schema").notNull().default(""),
-  createdAt: text("created_at").notNull().default("now()"),
+  createdAt: text("created_at").notNull().default(""),
   accessPermUsers: text("access_perm_users").notNull().default("*"),
 });
 

@@ -2,12 +2,6 @@ import { Hono } from "hono";
 import { WebClient } from "@slack/web-api";
 import { getAuth } from "./lib/auth";
 import { Feed } from "feed";
-import type {
-  Store,
-  StoreChannel,
-  StoreMessage,
-  StoreSubscription,
-} from "./store/store";
 import { OpenAPIHandler } from "@orpc/openapi/fetch";
 import { OpenAPIGenerator } from "@orpc/openapi";
 import { RPCHandler } from "@orpc/server/fetch";
@@ -19,11 +13,31 @@ import { createApiKeyContext } from "./lib/api-keys";
 import { getDb } from "./db";
 import * as schema from "./db/schema";
 import { eq } from "drizzle-orm";
+import * as q from "./db/queries";
+import type {
+  Channel as StoreChannel,
+  Message as StoreMessage,
+  Subscription as StoreSubscription,
+} from "./db/queries";
 
 // --- Helpers ---
 
 function getDbUrl(env: Env): string {
   return env.HYPERDRIVE_BINDING?.connectionString || env.DATABASE_URL;
+}
+
+function resolveSlackMrkdwn(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/<#([A-Z0-9]+)\|([^>]+)>/g, "#$2")
+    .replace(/<#([A-Z0-9]+)>/g, (_, id) => `#${id}`)
+    .replace(/<@([A-Z0-9]+)\|([^>]+)>/g, "@$2")
+    .replace(/<@([A-Z0-9]+)>/g, (_, id) => `<@${id}>`)
+    .replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, "$2")
+    .replace(/<(https?:\/\/[^>]+)>/g, "$1")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
 }
 
 function slackTsToTime(ts: string): Date {
@@ -204,7 +218,7 @@ function hasChannelPing(text: string): boolean {
 
 async function shouldForward(
   msg: StoreMessage,
-  store: Store,
+  db: any,
 ): Promise<boolean> {
   // Always forward Slack permalink cross-posts
   if (isSlackPermalink(msg.text)) return true;
@@ -218,7 +232,7 @@ async function shouldForward(
   }
   if (hasChannelPing(msg.text)) {
     const since = new Date(Date.now() - 5 * 60 * 1000);
-    const recent = await store.getRecentMessages(msg.channelId, since);
+    const recent = await q.getRecentMessages(db, msg.channelId, since);
     const hasSubstantive = recent.some(
       (m) =>
         m.slackTs !== msg.slackTs &&
@@ -318,7 +332,7 @@ function canAccessFeed(
 async function forwardToSubscribers(
   msg: StoreMessage,
   sourceChannel: StoreChannel,
-  store: Store,
+  db: any,
   slack: WebClient,
 ) {
   // Dedup: skip if we've already forwarded this message recently
@@ -329,14 +343,14 @@ async function forwardToSubscribers(
     return;
   }
 
-  const subs = await store.getSubscribersBySource(msg.channelId);
+  const subs = await q.getSubscribersBySource(db, msg.channelId);
   if (subs.length === 0) {
     console.log(
       `forwardToSubscribers: no subscribers for channel ${msg.channelId}`,
     );
     return;
   }
-  if (!(await shouldForward(msg, store))) {
+  if (!(await shouldForward(msg, db))) {
     console.log(
       `forwardToSubscribers: shouldForward returned false for ${msg.slackTs}`,
     );
@@ -380,7 +394,7 @@ async function forwardToSubscribers(
   }
 
   for (const sub of subs) {
-    const subCh = await store.getChannel(sub.subscriberChannelId);
+    const subCh = await q.getChannel(db, sub.subscriberChannelId);
     if (!subCh) {
       console.error(
         `Subscriber channel ${sub.subscriberChannelId} not found in DB`,
@@ -470,7 +484,7 @@ async function forwardToSubscribers(
       const origSourceChannel = fm ? fm[1] : "";
       let origSourceName = origSourceChannel;
       if (origSourceChannel) {
-        const origCh = await store.getChannel(origSourceChannel);
+        const origCh = await q.getChannel(db, origSourceChannel);
         if (origCh?.name) origSourceName = origCh.name;
       }
       footerText = `📰 Forwarded from <#${msg.channelId}|${sourceChannel.name}> from <#${origSourceChannel}|${origSourceName}> — <${permalink}|view source from ${dateStr}>`;
@@ -485,7 +499,11 @@ async function forwardToSubscribers(
       : !forwardLink || (Boolean(forwardLink) && isMessageEmpty(msg.text));
 
     const parsedMetadata =
-      msg.metadata && msg.metadata != "" ? JSON.parse(msg.metadata) : null;
+      msg.metadata && msg.metadata != ""
+        ? typeof msg.metadata === "string"
+          ? JSON.parse(msg.metadata)
+          : msg.metadata
+        : null;
     const parsedSchema = sourceChannel.metadataSchema
       ? JSON.parse(sourceChannel.metadataSchema)
       : null;
@@ -530,7 +548,7 @@ async function forwardToSubscribers(
             : undefined,
         } as any);
         if (res?.ts) {
-          await store.addBotAction({
+          await q.addBotAction(db, {
             type: "pub",
             sourceChannelId: msg.channelId,
             sourceMessageTs: msg.slackTs,
@@ -578,7 +596,7 @@ async function forwardToSubscribers(
         blocks,
       });
       if (res?.ts) {
-        await store.addBotAction({
+        await q.addBotAction(db, {
           type: "pub",
           sourceChannelId: msg.channelId,
           sourceMessageTs: msg.slackTs,
@@ -614,7 +632,7 @@ app.use("/api/*", async (c, next) => {
   if (c.req.path.startsWith("/api/auth/")) return next();
 
   const dbUrl = getDbUrl(c.env);
-  const store = await getStore(dbUrl);
+  const db = getDb(dbUrl);
 
   let session: ORPCContext["session"] = null;
   let apiKey: ORPCContext["apiKey"] = null;
@@ -642,7 +660,7 @@ app.use("/api/*", async (c, next) => {
   }
 
   const ctx: ORPCContext = {
-    store,
+    db,
     session,
     apiKey,
     databaseUrl: dbUrl,
@@ -697,13 +715,6 @@ let authDbReady: Record<string, Promise<void>> = {};
 app.on(["POST", "GET"], "/api/auth/*", async (c) => {
   try {
     const dbUrl = getDbUrl(c.env);
-    if (!authDbReady[dbUrl]) {
-      authDbReady[dbUrl] = (async () => {
-        const { pushSchema } = await import("./db/migrate");
-        await pushSchema(dbUrl);
-      })();
-    }
-    await authDbReady[dbUrl];
     const auth = getAuth(dbUrl, c.env as any);
     return auth.handler(c.req.raw);
   } catch (err: any) {
@@ -1260,7 +1271,7 @@ app.post("/events", async (c) => {
         payload.event?.channel,
       );
       const ev = payload.event;
-      const store = await getStore(getDbUrl(env));
+      const db = getDb(getDbUrl(env));
       const slack = new WebClient(env.SLACK_BOT_TOKEN);
 
       if (ev.type === "member_joined_channel") {
@@ -1280,16 +1291,16 @@ app.post("/events", async (c) => {
           metadataSchema: "",
           createdAt: "",
         };
-        await store.upsertChannel(ch);
+        await q.upsertChannel(db, ch);
         try {
           const conv = await slack.conversations.info({ channel: ev.channel });
           ch.name = (conv.channel as any)?.name || "";
-          await store.upsertChannel(ch);
+          await q.upsertChannel(db, ch);
         } catch {}
       }
 
       if (ev.type === "message" && !ev.subtype && !ev.thread_ts) {
-        const ch = await store.getChannel(ev.channel);
+        const ch = await q.getChannel(db, ev.channel);
         if (!ch || !ch.enabled) return;
 
         // Log full event for debugging empty forward messages
@@ -1344,12 +1355,12 @@ app.post("/events", async (c) => {
             ? { slack_permalink: msgPermalink }
             : {};
 
-          await store.upsertMessage({
+          await q.upsertMessage(db, {
             slackTs: ev.ts,
             channelId: ev.channel,
             userId: ev.user,
             userName,
-            text: ev.text,
+            text: resolveSlackMrkdwn(ev.text),
             timestamp: slackTsToTime(ev.ts).toISOString(),
             metadata,
           });
@@ -1358,7 +1369,7 @@ app.post("/events", async (c) => {
             channelId: ev.channel,
             userId: ev.user,
             userName,
-            text: ev.text,
+            text: resolveSlackMrkdwn(ev.text),
             timestamp: slackTsToTime(ev.ts).toISOString(),
             metadata,
           });
@@ -1368,12 +1379,12 @@ app.post("/events", async (c) => {
               channelId: ev.channel,
               userId: ev.user,
               userName,
-              text: ev.text,
+              text: resolveSlackMrkdwn(ev.text),
               timestamp: slackTsToTime(ev.ts).toISOString(),
               metadata,
             },
             ch,
-            store,
+            db,
             slack,
           );
           // if (ch.linkMode) await postPermalinkReply(slack, ev.channel, ev.ts);
@@ -1452,7 +1463,7 @@ app.post("/events", async (c) => {
         console.log(
           `Thread reply: channel=${ev.channel} thread_ts=${ev.thread_ts} ts=${ev.ts}`,
         );
-        const ch = await store.getChannel(ev.channel);
+        const ch = await q.getChannel(db, ev.channel);
         console.log(
           `Channel lookup: ch=${!!ch} enabled=${ch?.enabled} trackReplies=${ch?.trackReplies}`,
         );
@@ -1460,7 +1471,7 @@ app.post("/events", async (c) => {
 
         // Store the parent message if not already stored
         const existingParent = (
-          await store.getMessages(ev.channel, 200, 0)
+          await q.getMessages(db, ev.channel, { limit: 200 })
         ).find((m) => m.slackTs === ev.thread_ts);
         if (!existingParent) {
           try {
@@ -1477,7 +1488,7 @@ app.post("/events", async (c) => {
                 const u = await slack.users.info({ user: parentMsg.user });
                 parentUserName = (u.user as any)?.name || parentMsg.user;
               } catch {}
-              await store.upsertMessage({
+              await q.upsertMessage(db, {
                 slackTs: ev.thread_ts!,
                 channelId: ev.channel,
                 userId: parentMsg.user || "",
@@ -1496,13 +1507,13 @@ app.post("/events", async (c) => {
           const u = await slack.users.info({ user: ev.user });
           userName = (u.user as any)?.name || ev.user;
         } catch {}
-        await store.upsertMessage({
+        await q.upsertMessage(db, {
           slackTs: ev.ts,
           channelId: ev.channel,
           threadTs: ev.thread_ts,
           userId: ev.user,
           userName,
-          text: ev.text,
+          text: resolveSlackMrkdwn(ev.text),
           timestamp: slackTsToTime(ev.ts).toISOString(),
           metadata: {},
         });
@@ -1528,14 +1539,14 @@ app.post("/interactions", async (c) => {
   if (cb.type === "block_actions") {
     const action = cb.actions?.[0];
     if (action?.action_id === "indigest_metadata") {
-      const store = await getStore(getDbUrl(env));
+      const db = getDb(getDbUrl(env));
       const slack = new WebClient(env.SLACK_BOT_TOKEN);
       const channelId = cb.channel?.id;
       const messageTs = action.value;
       const triggerId = cb.trigger_id;
       const responseUrl = cb.response_url;
 
-      const ch = await store.getChannel(channelId);
+      const ch = await q.getChannel(db, channelId);
       if (!ch || !ch.enabled || !ch.metadataSchema) {
         return c.json({
           response_action: "update",
@@ -1617,7 +1628,7 @@ app.post("/interactions", async (c) => {
             lockdownUsers.includes(clickingUser) ||
             (await isChannelManager(channelId, clickingUser, slack));
           if (isManager) return;
-          const msgs = await store.getMessages(channelId, 100, 0);
+          const msgs = await q.getMessages(db, channelId, { limit: 100 });
           const originalMsg = msgs.find((m) => m.slackTs === messageTs);
           if (originalMsg?.userId !== clickingUser) {
             await slackResponse(
@@ -1639,7 +1650,7 @@ app.post("/interactions", async (c) => {
 
   c.executionCtx.waitUntil(
     (async () => {
-      const store = await getStore(getDbUrl(env));
+      const db = getDb(getDbUrl(env));
       const slack = new WebClient(env.SLACK_BOT_TOKEN);
 
       if (
@@ -1648,7 +1659,7 @@ app.post("/interactions", async (c) => {
       ) {
         const privateMeta = JSON.parse(cb.view.private_metadata || "{}");
         const { channelId, messageTs, botMessageTs } = privateMeta;
-        const channel = await store.getChannel(channelId);
+        const channel = await q.getChannel(db, channelId);
         if (!channel || !channel.enabled) return;
 
         let schema: any = null;
@@ -1706,12 +1717,12 @@ app.post("/interactions", async (c) => {
             userName = (u.user as any)?.name || userName;
           } catch {}
 
-          await store.upsertMessage({
+          await q.upsertMessage(db, {
             slackTs: messageTs,
             channelId,
             userId: msg.user || "",
             userName,
-            text: msg.text || "",
+            text: resolveSlackMrkdwn(msg.text || ""),
             timestamp: slackTsToTime(messageTs).toISOString(),
             metadata,
           });
@@ -1721,7 +1732,7 @@ app.post("/interactions", async (c) => {
             channelId,
             userId: msg.user || "",
             userName,
-            text: msg.text || "",
+            text: resolveSlackMrkdwn(msg.text || ""),
             timestamp: slackTsToTime(messageTs).toISOString(),
             metadata,
           });
@@ -1744,7 +1755,7 @@ app.post("/interactions", async (c) => {
               : "";
 
           // Find existing bot actions for this source message and edit them with metadata
-          const botActions = await store.getBotActionsBySource(
+          const botActions = await q.getBotActionsBySource(db, 
             channelId,
             messageTs,
           );
@@ -1797,12 +1808,12 @@ app.post("/interactions", async (c) => {
               channelId,
               userId: msg.user || "",
               userName,
-              text: msg.text || "",
+              text: resolveSlackMrkdwn(msg.text || ""),
               timestamp: slackTsToTime(messageTs).toISOString(),
               metadata,
             },
             channel,
-            store,
+            db,
             slack,
           );
           // if (channel.linkMode) await postPermalinkReply(client, channelId, messageTs);
@@ -1866,7 +1877,7 @@ app.post("/interactions", async (c) => {
 
         c.executionCtx.waitUntil(
           (async () => {
-            const store = await getStore(getDbUrl(env));
+            const db = getDb(getDbUrl(env));
             const slack = new WebClient(env.SLACK_BOT_TOKEN);
 
             const lockdownUsers = (env.LOCKDOWN_USERS || "")
@@ -1879,7 +1890,7 @@ app.post("/interactions", async (c) => {
               (await isChannelManager(channelId, clickingUser, slack));
 
             if (!isManager) {
-              const ch = await store.getChannel(channelId);
+              const ch = await q.getChannel(db, channelId);
               if (!ch || !ch.enabled) {
                 await slack.chat.postMessage({
                   channel: channelId,
@@ -1933,13 +1944,13 @@ app.post("/interactions", async (c) => {
                 ? { slack_permalink: msgPermalink }
                 : {};
 
-              const ch = await store.getChannel(channelId);
-              await store.upsertMessage({
+              const ch = await q.getChannel(db, channelId);
+              await q.upsertMessage(db, {
                 slackTs: messageTs,
                 channelId,
                 userId: msg.user || "",
                 userName,
-                text: msg.text || "",
+                text: resolveSlackMrkdwn(msg.text || ""),
                 timestamp: slackTsToTime(messageTs).toISOString(),
                 metadata,
               });
@@ -1949,12 +1960,12 @@ app.post("/interactions", async (c) => {
                 channelId,
                 userId: msg.user || "",
                 userName,
-                text: msg.text || "",
+                text: resolveSlackMrkdwn(msg.text || ""),
                 timestamp: slackTsToTime(messageTs).toISOString(),
                 metadata,
               };
               if (ch) await fireWebhook(ch, savedMsg);
-              if (ch) await forwardToSubscribers(savedMsg, ch, store, slack);
+              if (ch) await forwardToSubscribers(savedMsg, ch, db, slack);
             } catch (err: any) {
               console.error("backfill shortcut error:", err.message);
               await slack.chat.postMessage({
@@ -1978,7 +1989,7 @@ app.post("/interactions", async (c) => {
       const triggerId = cb.trigger_id;
       const botMessageTs = cb.container?.message_ts || "";
 
-      const ch = await store.getChannel(channelId);
+      const ch = await q.getChannel(db, channelId);
       if (!ch || !ch.enabled) {
         await slackResponse(responseUrl, "This channel is not enabled.");
         return;
@@ -2032,7 +2043,7 @@ app.post("/interactions", async (c) => {
               isLockdown ||
               (await isChannelManager(channelId, clickingUser, slack));
             if (!isManager) {
-              const msgs = await store.getMessages(channelId, 100, 0);
+              const msgs = await q.getMessages(db, channelId, { limit: 100 });
               const originalMsg = msgs.find((m) => m.slackTs === messageTs);
               if (originalMsg) {
                 let allowed = true;
@@ -2088,12 +2099,12 @@ app.post("/interactions", async (c) => {
             userName = (u.user as any)?.name || userName;
           } catch {}
 
-          await store.upsertMessage({
+          await q.upsertMessage(db, {
             slackTs: messageTs,
             channelId,
             userId: msg.user || "",
             userName,
-            text: msg.text || "",
+            text: resolveSlackMrkdwn(msg.text || ""),
             timestamp: slackTsToTime(messageTs).toISOString(),
             metadata: {},
           });
@@ -2103,12 +2114,12 @@ app.post("/interactions", async (c) => {
             channelId,
             userId: msg.user || "",
             userName,
-            text: msg.text || "",
+            text: resolveSlackMrkdwn(msg.text || ""),
             timestamp: slackTsToTime(messageTs).toISOString(),
             metadata: {},
           };
           await fireWebhook(ch, savedMsg);
-          await forwardToSubscribers(savedMsg, ch, store, slack);
+          await forwardToSubscribers(savedMsg, ch, db, slack);
           // if (ch.linkMode) await postPermalinkReply(slack, channelId, messageTs);
 
           // Update the bot's prompt to show approved state
@@ -2164,7 +2175,7 @@ app.post("/interactions", async (c) => {
       } else if (action.action_id === "indigest_no") {
         // Remove the message from the DB if it was previously approved
         try {
-          await store.deleteMessage(channelId, messageTs);
+          await q.deleteMessage(db, channelId, messageTs);
         } catch (err: any) {
           console.error("deleteMessage failed:", err.message);
         }
@@ -2245,7 +2256,7 @@ const slackSlashCommand = async (c: any) => {
 
   c.executionCtx.waitUntil(
     (async () => {
-      const store = await getStore(getDbUrl(env));
+      const db = getDb(getDbUrl(env));
       const slack = new WebClient(env.SLACK_BOT_TOKEN);
       const baseUrl = env.BASE_URL || "http://localhost:8787";
       const lockdownUsers = (env.LOCKDOWN_USERS || "")
@@ -2289,7 +2300,7 @@ const slackSlashCommand = async (c: any) => {
         rest = text;
       }
 
-      let ch = await store.getChannel(targetChannelId);
+      let ch = await q.getChannel(db, targetChannelId);
       if (!ch) {
         let name = targetChannelId;
         try {
@@ -2313,7 +2324,7 @@ const slackSlashCommand = async (c: any) => {
           metadataSchema: "",
           createdAt: "",
         };
-        await store.upsertChannel(ch);
+        await q.upsertChannel(db, ch);
       }
 
       const parts = rest.split(/\s+/);
@@ -2348,7 +2359,7 @@ const slackSlashCommand = async (c: any) => {
 
             if (!target) {
               ch.autoApproveUsers = ["*"];
-              await store.upsertChannel(ch);
+              await q.upsertChannel(db, ch);
               await respond(
                 `📰 Auto-approve enabled for all users in #${ch.name}.\nRSS: ${baseUrl}/feed/${targetChannelId}\nJSON: ${baseUrl}/feed/${targetChannelId}.json`,
               );
@@ -2378,7 +2389,7 @@ const slackSlashCommand = async (c: any) => {
               return;
             }
             ch.autoApproveUsers.push(target);
-            await store.upsertChannel(ch);
+            await q.upsertChannel(db, ch);
             await respond(
               `📰 Auto-approve enabled for <@${target}> in #${ch.name}.\nRSS: ${baseUrl}/feed/${targetChannelId}\nJSON: ${baseUrl}/feed/${targetChannelId}.json`,
             );
@@ -2399,7 +2410,7 @@ const slackSlashCommand = async (c: any) => {
               "false",
             ].includes((arg || "").trim().toLowerCase());
             ch.linkMode = !wantsOff;
-            await store.upsertChannel(ch);
+            await q.upsertChannel(db, ch);
             const label =
               targetChannelId === sourceChannelId
                 ? "this channel"
@@ -2421,7 +2432,7 @@ const slackSlashCommand = async (c: any) => {
             }
             ch.enabled = true;
             ch.autoApproveUsers = [];
-            await store.upsertChannel(ch);
+            await q.upsertChannel(db, ch);
             const label =
               targetChannelId === sourceChannelId
                 ? "this channel"
@@ -2441,7 +2452,7 @@ const slackSlashCommand = async (c: any) => {
             }
             ch.trackReplies = !ch.trackReplies;
             ch.enabled = true;
-            await store.upsertChannel(ch);
+            await q.upsertChannel(db, ch);
             const label =
               targetChannelId === sourceChannelId
                 ? "this channel"
@@ -2468,7 +2479,7 @@ const slackSlashCommand = async (c: any) => {
           }
           ch.enabled = true;
           ch.autoApproveUsers = [];
-          await store.upsertChannel(ch);
+          await q.upsertChannel(db, ch);
           const label =
             targetChannelId === sourceChannelId ? "" : ` in #${ch.name}`;
           await respond(
@@ -2486,7 +2497,7 @@ const slackSlashCommand = async (c: any) => {
             const target = arg.replace(/^<@(\w+)(\|[^>]*)?>$/, "$1").trim();
             if (!target) {
               ch.autoApproveUsers = [];
-              await store.upsertChannel(ch);
+              await q.upsertChannel(db, ch);
               await respond(
                 `Auto-approve disabled for all users in #${ch.name}.`,
               );
@@ -2495,7 +2506,7 @@ const slackSlashCommand = async (c: any) => {
             ch.autoApproveUsers = ch.autoApproveUsers.filter(
               (id) => id !== target,
             );
-            await store.upsertChannel(ch);
+            await q.upsertChannel(db, ch);
             await respond(
               `Auto-approve disabled for <@${target}> in #${ch.name}.`,
             );
@@ -2513,7 +2524,7 @@ const slackSlashCommand = async (c: any) => {
             return;
           }
           ch.enabled = false;
-          await store.upsertChannel(ch);
+          await q.upsertChannel(db, ch);
           const label =
             targetChannelId === sourceChannelId ? "" : ` in #${ch.name}`;
           await respond(`indigest unpub'd${label}.`);
@@ -2574,7 +2585,7 @@ const slackSlashCommand = async (c: any) => {
             }
           }
 
-          const sourceCh = await store.getChannel(sourceId);
+          const sourceCh = await q.getChannel(db, sourceId);
           sourceName = sourceCh?.name || subNameFromRef || sourceId;
 
           if (sourceId === sourceChannelId) {
@@ -2590,13 +2601,14 @@ const slackSlashCommand = async (c: any) => {
           }
 
           const existingSubs =
-            await store.getSubscriptionsBySubscriber(sourceChannelId);
+            await q.getSubscriptionsBySubscriber(db, sourceChannelId);
           if (existingSubs.some((s) => s.sourceChannelId === sourceId)) {
             await respond(`Already subscribed to #${sourceName}.`);
             return;
           }
 
-          await store.addSubscription(sourceChannelId, sourceId);
+          await q.addSubscription(db, sourceChannelId, sourceId);
+          cachedGraph = null;
           await respond(
             `📰 Subscribed to #${sourceName}. Messages pub'd there will be forwarded here.`,
           );
@@ -2657,17 +2669,18 @@ const slackSlashCommand = async (c: any) => {
             }
           }
 
-          const sourceCh = await store.getChannel(sourceId);
+          const sourceCh = await q.getChannel(db, sourceId);
           sourceName = sourceCh?.name || unsubNameFromRef || sourceId;
 
           const existingSubs =
-            await store.getSubscriptionsBySubscriber(sourceChannelId);
+            await q.getSubscriptionsBySubscriber(db, sourceChannelId);
           if (!existingSubs.some((s) => s.sourceChannelId === sourceId)) {
             await respond(`Not subscribed to #${sourceName}.`);
             return;
           }
 
-          await store.removeSubscription(sourceChannelId, sourceId);
+          await q.removeSubscription(db, sourceChannelId, sourceId);
+          cachedGraph = null;
           await respond(`📰 Unsubscribed from #${sourceName}.`);
           return;
         }
@@ -2726,22 +2739,22 @@ const slackSlashCommand = async (c: any) => {
             }
             msg += `\nThread replies: ${ch.trackReplies ? "tracked" : "off"}`;
             const subs =
-              await store.getSubscriptionsBySubscriber(targetChannelId);
+              await q.getSubscriptionsBySubscriber(db, targetChannelId);
             if (subs.length > 0) {
               const subNames = await Promise.all(
                 subs.map(async (s) => {
-                  const sch = await store.getChannel(s.sourceChannelId);
+                  const sch = await q.getChannel(db, s.sourceChannelId);
                   return sch ? `#${sch.name}` : s.sourceChannelId;
                 }),
               );
               msg += `\nSubscribed to: ${subNames.join(", ")}`;
             }
             const subscribers =
-              await store.getSubscribersBySource(targetChannelId);
+              await q.getSubscribersBySource(db, targetChannelId);
             if (subscribers.length > 0) {
               const subNames = await Promise.all(
                 subscribers.map(async (s) => {
-                  const sch = await store.getChannel(s.subscriberChannelId);
+                  const sch = await q.getChannel(db, s.subscriberChannelId);
                   return sch ? `#${sch.name}` : s.subscriberChannelId;
                 }),
               );
@@ -2778,7 +2791,7 @@ const slackSlashCommand = async (c: any) => {
             }
             if (subcmd === "clear") {
               ch.webhookUrl = "";
-              await store.upsertChannel(ch);
+              await q.upsertChannel(db, ch);
               await respond("Webhook cleared.");
               return;
             }
@@ -2788,7 +2801,7 @@ const slackSlashCommand = async (c: any) => {
               return;
             }
             ch.webhookUrl = url;
-            await store.upsertChannel(ch);
+            await q.upsertChannel(db, ch);
             await respond(`📰 Webhook set to ${url}`);
             return;
           }
@@ -2832,7 +2845,7 @@ const slackSlashCommand = async (c: any) => {
 
             if (subcmd === "clear") {
               ch.metadataSchema = "";
-              await store.upsertChannel(ch);
+              await q.upsertChannel(db, ch);
               await respond("Metadata schema cleared.");
               return;
             }
@@ -2853,7 +2866,7 @@ const slackSlashCommand = async (c: any) => {
                   return;
                 }
                 ch.metadataSchema = JSON.stringify(parsed);
-                await store.upsertChannel(ch);
+                await q.upsertChannel(db, ch);
                 await respond(
                   `📰 Metadata schema set with ${parsed.fields.length} field(s).`,
                 );
@@ -2892,7 +2905,7 @@ const slackSlashCommand = async (c: any) => {
 
             if (subcmd === "clear") {
               ch.approvedPosters = [];
-              await store.upsertChannel(ch);
+              await q.upsertChannel(db, ch);
               await respond(
                 "Poster permissions cleared. Back to default: only the original poster and channel managers can approve.",
               );
@@ -2920,7 +2933,7 @@ const slackSlashCommand = async (c: any) => {
             }
 
             ch.approvedPosters = posterMode ? ["poster", ...userIds] : userIds;
-            await store.upsertChannel(ch);
+            await q.upsertChannel(db, ch);
             if (posterMode && userIds.length > 0) {
               const users = userIds.map((id) => `<@${id}>`).join(", ");
               await respond(
@@ -2960,8 +2973,8 @@ app.get("/feed/:channelId", async (c) => {
       rawId.endsWith(".json") ||
       c.req.header("accept")?.includes("application/json");
     const channelId = wantsJson ? rawId.replace(/\.json$/, "") : rawId;
-    const store = await getStore(getDbUrl(env));
-    const ch = await store.getChannel(channelId);
+    const db = getDb(getDbUrl(env));
+    const ch = await q.getChannel(db, channelId);
     if (!ch || !ch.enabled) {
       return c.json({ error: "not found", id: channelId }, 404);
     }
@@ -2976,7 +2989,7 @@ app.get("/feed/:channelId", async (c) => {
 
     const limit = Math.min(parseInt(c.req.query("limit") || "50") || 50, 200);
     const offset = parseInt(c.req.query("offset") || "0") || 0;
-    const msgs = await store.getMessages(channelId, limit, offset);
+    const msgs = await q.getMessages(db, channelId, { limit, offset });
 
     if (wantsJson) {
       return c.json(msgs);
@@ -3012,13 +3025,13 @@ app.get("/feed/:channelId", async (c) => {
 // === REST API ===
 app.get("/api/messages", async (c) => {
   const env = c.env;
-  const store = await getStore(getDbUrl(env));
+  const db = getDb(getDbUrl(env));
   const channel = c.req.query("channel");
   if (!channel) {
     return c.json({ error: "channel is required" }, 400);
   }
 
-  const ch = await store.getChannel(channel);
+  const ch = await q.getChannel(db, channel);
   if (!ch || !ch.enabled) {
     return c.json({ error: "channel not found or not enabled" }, 404);
   }
@@ -3037,18 +3050,14 @@ app.get("/api/messages", async (c) => {
   const threadTs = c.req.query("threadTs");
   const limit = Math.min(parseInt(c.req.query("limit") || "50") || 50, 10000);
   const page = parseInt(c.req.query("page") || "1") || 1;
-
-  const all = await store.getMessages(channel, 100000, 0);
-
-  let filtered = all;
-  if (after) filtered = filtered.filter((m) => m.timestamp >= after);
-  if (before) filtered = filtered.filter((m) => m.timestamp <= before);
-  if (userId) filtered = filtered.filter((m) => m.userId === userId);
-  if (threadTs) filtered = filtered.filter((m) => m.threadTs === threadTs);
-
-  const total = filtered.length;
   const offset = (page - 1) * limit;
-  const items = filtered.slice(offset, offset + limit);
+
+  const filterOpts = { after, before, userId, threadTs };
+
+  const [total, items] = await Promise.all([
+    q.getMessageCount(db, channel, filterOpts),
+    q.getMessages(db, channel, { limit, offset, ...filterOpts }),
+  ]);
 
   return c.json({
     data: items,
@@ -3058,7 +3067,7 @@ app.get("/api/messages", async (c) => {
 
 app.get("/api/messages/:slackTs", async (c) => {
   const env = c.env;
-  const store = await getStore(getDbUrl(env));
+  const db = getDb(getDbUrl(env));
   const slackTs = decodeURIComponent(c.req.param("slackTs"));
   const channel = c.req.query("channel") || "";
 
@@ -3066,7 +3075,7 @@ app.get("/api/messages/:slackTs", async (c) => {
     return c.json({ error: "channel is required" }, 400);
   }
 
-  const ch = await store.getChannel(channel);
+  const ch = await q.getChannel(db, channel);
   if (!ch || !ch.enabled) {
     return c.json({ error: "channel not found or not enabled" }, 404);
   }
@@ -3079,8 +3088,7 @@ app.get("/api/messages/:slackTs", async (c) => {
     );
   }
 
-  const all = await store.getMessages(channel, 100000, 0);
-  const msg = all.find((m) => m.slackTs === slackTs);
+  const msg = await q.getMessageBySlackTs(db, channel, slackTs);
   if (!msg) {
     return c.json({ error: "message not found" }, 404);
   }
@@ -3090,16 +3098,16 @@ app.get("/api/messages/:slackTs", async (c) => {
 
 app.get("/api/channels", async (c) => {
   const env = c.env;
-  const store = await getStore(getDbUrl(env));
-  const channels = await store.listChannels();
+  const db = getDb(getDbUrl(env));
+  const channels = await q.listChannels(db);
   return c.json({ data: channels });
 });
 
 app.get("/api/channels/:id", async (c) => {
   const env = c.env;
-  const store = await getStore(getDbUrl(env));
+  const db = getDb(getDbUrl(env));
   const id = decodeURIComponent(c.req.param("id"));
-  const ch = await store.getChannel(id);
+  const ch = await q.getChannel(db, id);
   if (!ch) return c.json({ error: "channel not found" }, 404);
   return c.json({ data: ch });
 });
@@ -3115,10 +3123,10 @@ app.get("/api/graph", async (c) => {
     return c.json(cachedGraph.data);
   }
 
-  const store = await getStore(getDbUrl(env));
+  const db = getDb(getDbUrl(env));
 
   const { channels, subscriptions, subscriberChannels } =
-    await store.getGraphData();
+    await q.getGraphData(db);
 
   // Index channels by ID for fast lookup
   const channelMap = new Map<string, StoreChannel>();
@@ -3243,132 +3251,5 @@ app.get("/api/graph", async (c) => {
   cachedGraph = { data: result, at: Date.now() };
   return c.json(result);
 });
-
-// --- Store (lazy singleton per DB URL) ---
-
-const storeCache = new Map<string, Store>();
-const ddlRan = new Set<string>();
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isTransientDbError(err: unknown): boolean {
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return (
-    msg.includes("econnreset") ||
-    msg.includes("econnrefused") ||
-    msg.includes("etimedout") ||
-    msg.includes("timeout") ||
-    msg.includes("network") ||
-    msg.includes("fetch failed") ||
-    msg.includes("dns") ||
-    msg.includes("getaddrinfo") ||
-    msg.includes("connection terminated") ||
-    msg.includes("failed query")
-  );
-}
-
-async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (!isTransientDbError(err) || i === attempts - 1) throw err;
-      await sleep(50 * Math.pow(2, i));
-    }
-  }
-  throw lastErr;
-}
-
-function retryingStore(store: Store): Store {
-  return {
-    getChannel: (id) => withRetry(() => store.getChannel(id)),
-    upsertChannel: (ch) => withRetry(() => store.upsertChannel(ch)),
-    listChannels: () => withRetry(() => store.listChannels()),
-    listEnabledChannels: () => withRetry(() => store.listEnabledChannels()),
-    upsertMessage: (msg) => withRetry(() => store.upsertMessage(msg)),
-    deleteMessage: (channelId, slackTs) =>
-      withRetry(() => store.deleteMessage(channelId, slackTs)),
-    getMessages: (channelId, limit, offset) =>
-      withRetry(() => store.getMessages(channelId, limit, offset)),
-    addSubscription: (subscriberChannelId, sourceChannelId) =>
-      withRetry(() =>
-        store.addSubscription(subscriberChannelId, sourceChannelId),
-      ),
-    removeSubscription: (subscriberChannelId, sourceChannelId) =>
-      withRetry(() =>
-        store.removeSubscription(subscriberChannelId, sourceChannelId),
-      ),
-    getSubscribersBySource: (sourceChannelId) =>
-      withRetry(() => store.getSubscribersBySource(sourceChannelId)),
-    getSubscriptionsBySubscriber: (subscriberChannelId) =>
-      withRetry(() => store.getSubscriptionsBySubscriber(subscriberChannelId)),
-    getRecentMessages: (channelId, since) =>
-      withRetry(() => store.getRecentMessages(channelId, since)),
-    addBotAction: (action) => withRetry(() => store.addBotAction(action)),
-    getBotActionsBySource: (sourceChannelId, sourceMessageTs) =>
-      withRetry(() =>
-        store.getBotActionsBySource(sourceChannelId, sourceMessageTs),
-      ),
-    getGraphData: () => withRetry(() => store.getGraphData()),
-    close: () => store.close(),
-  };
-}
-
-async function runDdlOnce(databaseUrl: string) {
-  if (ddlRan.has(databaseUrl)) return;
-  ddlRan.add(databaseUrl);
-  const { neon } = await import("@neondatabase/serverless");
-  const sql = neon(databaseUrl);
-  const stmts = [
-    sql`CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', team_id TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, link_mode INTEGER NOT NULL DEFAULT 0, webhook_url TEXT NOT NULL DEFAULT '', auto_approve_users TEXT NOT NULL DEFAULT '', approved_posters TEXT NOT NULL DEFAULT '', track_replies INTEGER NOT NULL DEFAULT 0, metadata_schema TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (now() at time zone 'utc'))`,
-    sql`CREATE TABLE IF NOT EXISTS messages (id SERIAL PRIMARY KEY, slack_ts TEXT NOT NULL, channel_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '', user_name TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '', thread_ts TEXT, timestamp TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}')`,
-    sql`CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, subscriber_channel_id TEXT NOT NULL, source_channel_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (now() at time zone 'utc'))`,
-    sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_channel_ts ON messages(channel_id, slack_ts)`,
-    sql`CREATE INDEX IF NOT EXISTS idx_messages_channel_ts ON messages(channel_id, timestamp DESC)`,
-    sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions ON subscriptions(subscriber_channel_id, source_channel_id)`,
-    sql`CREATE INDEX IF NOT EXISTS idx_subscriptions_source ON subscriptions(source_channel_id)`,
-    sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS link_mode INTEGER NOT NULL DEFAULT 0`,
-    sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS auto_approve_users TEXT NOT NULL DEFAULT ''`,
-    sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS approved_posters TEXT NOT NULL DEFAULT ''`,
-    sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS track_replies INTEGER NOT NULL DEFAULT 0`,
-    sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS metadata_schema TEXT NOT NULL DEFAULT ''`,
-    sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS thread_ts TEXT`,
-  ];
-  for (const stmt of stmts) {
-    try {
-      await stmt;
-    } catch {}
-  }
-}
-
-async function getStore(databaseUrl: string): Promise<Store> {
-  const cached = storeCache.get(databaseUrl);
-  if (cached) return cached;
-
-  const isNeon =
-    databaseUrl.includes("neon.tech") || databaseUrl.includes("neondb");
-
-  if (!isNeon) {
-    const { pushSchema } = await import("./db/migrate");
-    await pushSchema(databaseUrl);
-  }
-
-  let store: Store;
-  if (isNeon) {
-    const { NeonStore } = await import("./store/neon");
-    store = new NeonStore(databaseUrl);
-  } else {
-    const { PostgresStore } = await import("./store/pg");
-    store = new PostgresStore(databaseUrl);
-  }
-  store = retryingStore(store);
-  storeCache.set(databaseUrl, store);
-  if (isNeon) runDdlOnce(databaseUrl).catch(() => {});
-  return store;
-}
 
 export default app;

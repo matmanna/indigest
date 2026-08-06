@@ -2,15 +2,15 @@ import { ORPCError } from "@orpc/server";
 import { z } from "zod";
 import { authRequiredProcedure, isChannelManager } from "../context";
 import { generateApiKey } from "../../lib/api-keys";
-import { getDb } from "../../db";
 import { apiKeys, apiKeyChannels, authUser } from "../../db/schema";
 import { eq } from "drizzle-orm";
 import { aliasedTable } from "drizzle-orm/alias";
+import { getChannel as dbGetChannel } from "../../db/queries";
 
 export const listApiKeys = authRequiredProcedure
   .route({ method: "GET", path: "/api-keys" })
   .handler(async ({ context }) => {
-    const db = getDb(context.databaseUrl);
+    const db = context.db;
     const userId = context.session?.user?.id;
     if (!userId) return [];
 
@@ -54,11 +54,13 @@ export const createApiKey = authRequiredProcedure
     if (!slackId)
       throw new ORPCError("FORBIDDEN", { message: "No Slack ID on session" });
 
+    const db = context.db;
+
     // Validate user has access to each specified channel
     if (input.channelIds && input.channelIds.length > 0) {
       const isLockdown = context.lockdownUsers.includes(slackId);
       for (const channelId of input.channelIds) {
-        const ch = await context.store.getChannel(channelId);
+        const ch = await dbGetChannel(db, channelId);
         if (!ch)
           throw new ORPCError("NOT_FOUND", {
             message: `Channel ${channelId} not found`,
@@ -81,7 +83,6 @@ export const createApiKey = authRequiredProcedure
     const { fullKey, keyPrefix, secretHash } = generateApiKey();
     const hash = await secretHash;
 
-    const db = getDb(context.databaseUrl);
     const [keyRow] = await db
       .insert(apiKeys)
       .values({
@@ -108,7 +109,7 @@ export const revokeApiKey = authRequiredProcedure
   .route({ method: "DELETE", path: "/api-keys/{id}" })
   .input(z.object({ id: z.coerce.number().int() }))
   .handler(async ({ input, context }) => {
-    const db = getDb(context.databaseUrl);
+    const db = context.db;
     await db.delete(apiKeyChannels).where(eq(apiKeyChannels.keyId, input.id));
     await db
       .update(apiKeys)

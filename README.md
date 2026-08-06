@@ -10,7 +10,7 @@
   </tr>
 </table>
 
-## how it works
+## how does this work?
 
 1. the bot is added to any channel
 2. a channel manager or bot admin runs `/in pub`
@@ -19,18 +19,26 @@
 5. if configured, extra metadata can be set through a Slack form modal
 6. managers of other channels can run `/in sub` to receive forwarded copies of approved messages
 
+<details><summary>wait, but how does it do that?</summary>
+
+<ul>
+  <li>ts</li><li>bun</li><li>hono</li><li>cf workers</li><li>postgres (hosted on hc infra / orchard)</li><li>oRPC</li><li>drizzle orm</li><li>zod</li><li>better auth</li><li>various slack sdks</li><li>vite</li><li>react (planning to switch to svelte or preact at some point)</li><li>react flow</li>
+
+  </ul>
+
+</details>
+
 ## map of the network
 
-see a node graph mapping the channels currently using Indigest in Hack Club at https://indigest.matmanna.dev
+see a node graph mapping the channels currently using indigest in Hack Club at <https://indigest.matmanna.dev>
 
 <img width="2077" height="1484" alt="image" src="https://github.com/user-attachments/assets/a163a355-5095-4ba9-9031-b3001349abda" />
 
-## commands
+## how do i use this?
 
 _tldr: if you forget what to do, run `/in`_
 
 <img width="630" height="440" alt="image" src="https://github.com/user-attachments/assets/019ff40d-a2b9-4d00-9ddc-6ebf296e082f" />
-
 
 > [!NOTE]
 > auto-publish will soon only be available to whitelisted "trusted" channels
@@ -54,7 +62,7 @@ _tldr: if you forget what to do, run `/in`_
 | `/in schema get`         | View current metadata schema                                         |
 | `/in schema clear`       | Remove metadata schema                                               |
 
-## publishing 
+## publishing
 
 **manual, per-message, opt-in publishing:**
 
