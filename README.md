@@ -5,29 +5,37 @@
     <td>indigest</td>
   </tr>
   <tr>
-    <td>A Slack bot & bridge that lets channel members opt individual messages into RSS feeds, a REST API, and webhooks. Can also forward messages between channels via pub/sub-style commands.
+    <td>a Slack bot that curates messages into digestible RSS feeds & APIs while enabling cross-channel message forwarding via pub-sub style commands
 </td>
   </tr>
 </table>
 
-## How it works
+## how it works
 
-1. The bot is added to any channel
-2. A channel manager or bot admin runs `/in pub`
-3. Messages get approved manually ('yep'/'nope' buttons) or automatically (auto-approve)
-4. Approved messages are stored in PostgreSQL and served via RSS/JSON/Webhooks
-5. If configured, extra metadata can be set through a Slack form modal
-6. Managers of other channels can run `/in sub` to receive forwarded copies of approved messages
+1. the bot is added to any channel
+2. a channel manager or bot admin runs `/in pub`
+3. messages get approved manually by posters ('yep'/'nope' buttons) or automatically (auto-approve) for high-trust channels
+4. approved messages are served via RSS/JSON/Webhooks
+5. if configured, extra metadata can be set through a Slack form modal
+6. managers of other channels can run `/in sub` to receive forwarded copies of approved messages
 
-## Map of the network
+## map of the network
 
-See a node graph mapping the channels currently using Indigest in Hack Club at https://indigest.matmanna.dev
+see a node graph mapping the channels currently using Indigest in Hack Club at https://indigest.matmanna.dev
 
-## Commands
+<img width="2077" height="1484" alt="image" src="https://github.com/user-attachments/assets/a163a355-5095-4ba9-9031-b3001349abda" />
 
-All commands use the prefix `/in` (or `/indigest`). An optional `#channel` prefix on any command targets a different channel.
+## commands
 
-| Command                  | Description                                                          |
+_tldr: if you forget what to do, run `/in`_
+
+<img width="630" height="440" alt="image" src="https://github.com/user-attachments/assets/019ff40d-a2b9-4d00-9ddc-6ebf296e082f" />
+
+
+> [!NOTE]
+> auto-publish will soon only be available to whitelisted "trusted" channels
+
+| command                  | description                                                          |
 | ------------------------ | -------------------------------------------------------------------- |
 | `/in`                    | Show help message with all commands                                  |
 | `/in pub`                | Enable manual mode (buttons on every message)                        |
@@ -46,27 +54,23 @@ All commands use the prefix `/in` (or `/indigest`). An optional `#channel` prefi
 | `/in schema get`         | View current metadata schema                                         |
 | `/in schema clear`       | Remove metadata schema                                               |
 
-## Permissions
+## permission structure
 
-- **channel manager** — can run all commands on channels they created
-- **lockdown override** — listed in `LOCKDOWN_USERS`, can run all commands everywhere
-- **none** — can only view `status` and feed URLs
+- **channel manager** - can run all commands unless lockdown mode enabled
+- **lockdown override** - listed in `LOCKDOWN_USERS`, can always run all commands
+- **channel member** - can only view `status` and public feed URLs
 
-`/in` alone (no subcommand) shows the full help message.
+<img width="712" height="329" alt="image" src="https://github.com/user-attachments/assets/d4c21942-2e7a-48ad-8044-1683f8841728" />
 
-## Subscriptions
 
-A **subscription** means channel A subscribes to channel B. When a message is approved in channel B, it is automatically forwarded to channel A as a new Slack message posted as the original author (with their name and profile picture).
+## subscriptions
 
-**Forwarded messages include:**
+if channel A subscrbies to channel B, when a message is approved in channel B, it is automatically forwarded to channel A as a new Slack message  (either posted as a forward or with the original author's name, message, and profile picture.
 
-- The original author's display name and avatar
-- The message text
-- A context footer with a permalink to the original message
+> [!NOTE]
+> exceptions to publishing: messages that are empty, contain only a link, or are `@here`/`@channel` pings (when recent substantive content exists) are not forwarded.
 
-**Filtering:** Messages that are empty, contain only a link, or are `@here`/`@channel` pings (when recent substantive content exists) are not forwarded.
-
-## Metadata Schema
+## setting metadata
 
 Channel creators can define a metadata form that opens in a **modal** when someone clicks **Yep!** on a message in manual mode.
 
@@ -79,7 +83,7 @@ Channel creators can define a metadata form that opens in a **modal** when someo
 ]}
 ```
 
-**Supported field types:**
+**metadata field types:**
 
 | Type                  | Notes                                                                            |
 | --------------------- | -------------------------------------------------------------------------------- |
@@ -92,11 +96,9 @@ Channel creators can define a metadata form that opens in a **modal** when someo
 | `datepicker`          | Date picker                                                                      |
 | `file_input`          | File upload (uploaded to Hack Club CDN if key is set)                            |
 
-Submitted metadata is stored as JSON in the `metadata` column, included in webhook payloads, and returned in the JSON API.
+## webhooks
 
-## Webhooks
-
-When a message is approved, fires `POST` to the webhook URL:
+when a message is approved, fires `POST` to the webhook URL:
 
 ```json
 {
@@ -113,125 +115,22 @@ When a message is approved, fires `POST` to the webhook URL:
 }
 ```
 
-## Feeds
+## feeds
 
 - **RSS**: `https://your-host/feed/{channel_id}`
 - **JSON**: `https://your-host/feed/{channel_id}.json?limit=50&offset=0`
 
-Query parameters: `limit` (max 200, default 50), `offset` (default 0).
+query parameters: `limit` (max 200, default 50), `offset` (default 0).
 
 ## REST API
 
-All endpoints require Basic Auth using `API_USERNAME` / `API_PASSWORD`. If `API_PASSWORD` is empty, auth is disabled.
+interactive API docs can be found at [https://indigest.matmanna.dev/docs](https://indigest.matmanna.dev/docs).
 
-### List Messages
+## development
 
-```
-GET /api/messages?channel=<channel_id>&limit=50&page=1&after=2025-01-01T00:00:00Z&before=2026-01-01T00:00:00Z&userId=U12345
-```
-
-| Parameter | Type   | Required | Description                                         |
-| --------- | ------ | -------- | --------------------------------------------------- |
-| `channel` | string | yes      | Slack channel ID                                    |
-| `limit`   | number | no       | Results per page (1-10000, default 50)              |
-| `page`    | number | no       | Page number (default 1)                             |
-| `after`   | string | no       | ISO 8601 timestamp — only messages after this time  |
-| `before`  | string | no       | ISO 8601 timestamp — only messages before this time |
-| `userId`  | string | no       | Filter by Slack user ID                             |
-
-**Response:**
-
-```json
-{
-  "data": [
-    {
-      "id": 3,
-      "slackTs": "1783464404.108959",
-      "channelId": "C0ACWHCA16F",
-      "userId": "U07VA44DNBA",
-      "userName": "mat",
-      "text": "hello world",
-      "timestamp": "2026-07-07T22:46:44.000Z",
-      "metadata": "{}"
-    }
-  ],
-  "pagination": {
-    "page": 1,
-    "limit": 50,
-    "total": 1,
-    "total_pages": 1
-  }
-}
-```
-
-### Get Single Message
-
-```
-GET /api/messages/{slackTs}?channel=<channel_id>
-```
-
-| Parameter | Type   | Required | Description                       |
-| --------- | ------ | -------- | --------------------------------- |
-| `slackTs` | string | yes      | Slack message timestamp (in path) |
-| `channel` | string | yes      | Slack channel ID (query param)    |
-
-**Response:**
-
-```json
-{
-  "data": {
-    "id": 3,
-    "slackTs": "1783464404.108959",
-    "channelId": "C0ACWHCA16F",
-    "userId": "U07VA44DNBA",
-    "userName": "mat",
-    "text": "hello world",
-    "timestamp": "2026-07-07T22:46:44.000Z",
-    "metadata": "{}"
-  }
-}
-```
-
-### cURL Examples
+use either docker or wrangler dev
 
 ```bash
-# List messages with auth
-curl -u admin:password 'https://your-host/api/messages?channel=C0ACWHCA16F&limit=10'
-
-# Filter by time range
-curl -u admin:password 'https://your-host/api/messages?channel=C0ACWHCA16F&after=2025-06-01T00:00:00Z'
-
-# Get a specific message
-curl -u admin:password 'https://your-host/api/messages/1783464404.108959?channel=C0ACWHCA16F'
-```
-
-## Architecture
-
-### Store Backends
-
-The app auto-detects which database backend to use based on `DATABASE_URL`:
-
-- **Neon HTTP** (`DATABASE_URL` contains `neon.tech`) — stateless, no TCP connections. Used by the Cloudflare Worker.
-- **Postgres TCP** (any other `DATABASE_URL`) — persistent connection pool. Used by Docker Compose.
-
-Both implement the same `Store` interface and are fully interchangeable.
-
-### Database Schema
-
-**`channels`** — pub'd channel configuration (id, name, team_id, enabled, webhook_url, auto_approve_users, metadata_schema, created_at)
-
-**`messages`** — approved messages (id, slack_ts, channel_id, user_id, user_name, text, timestamp, metadata)
-
-**`subscriptions`** — channel-to-channel forwarding rules (subscriber_channel_id, source_channel_id, created_at)
-
-Schema is bootstrapped automatically on first request.
-
-## Development
-
-```bash
-# Local dev with Docker
-docker compose up -d
-
 # Drizzle Studio (browse DB)
 docker compose run app bun run db:studio
 
@@ -240,9 +139,7 @@ npx wrangler dev        # local dev
 npx wrangler deploy     # deploy to Cloudflare
 ```
 
-## Deploy
-
-### Cloudflare Worker (production)
+## deploy
 
 ```bash
 npx wrangler login
@@ -252,34 +149,6 @@ npx wrangler secret put DATABASE_URL
 npx wrangler deploy
 ```
 
-The Worker auto-detects Neon Postgres from the `DATABASE_URL` and uses the HTTP-based store. Schema is bootstrapped on first request.
+## env vars
 
-Update your Slack app's Event Subscriptions and Interactions URLs to point to the deployed Worker.
-
-### Docker Compose (local dev)
-
-```bash
-docker compose up -d
-```
-
-Runs the app on `localhost:8080` with a local Postgres 17 instance. The store auto-detects a non-Neon `DATABASE_URL` and uses the TCP-based driver.
-
-## Environment
-
-### Secrets (set via `wrangler secret put` or `.env`)
-
-| Variable               | Description                                                        |
-| ---------------------- | ------------------------------------------------------------------ |
-| `SLACK_BOT_TOKEN`      | Slack bot user OAuth token (`xoxb-...`)                            |
-| `SLACK_SIGNING_SECRET` | Slack request signing secret                                       |
-| `DATABASE_URL`         | PostgreSQL connection string (Neon for Worker, local for Docker)   |
-| `API_PASSWORD`         | Password for Basic Auth on `/api/*` routes (empty = auth disabled) |
-
-### Vars (set in `wrangler.jsonc` or `.env`)
-
-| Variable            | Description                                                  | Default                 |
-| ------------------- | ------------------------------------------------------------ | ----------------------- |
-| `BASE_URL`          | Public base URL for feed links in Slack responses            | `http://localhost:8080` |
-| `API_USERNAME`      | Username for Basic Auth on `/api/*` routes                   | `admin`                 |
-| `LOCKDOWN_USERS`    | Comma-separated Slack user IDs that bypass permission checks | (empty)                 |
-| `HACK_CLUB_CDN_KEY` | Hack Club CDN API key for `file_input` uploads               | (empty)                 |
+see .env.example
