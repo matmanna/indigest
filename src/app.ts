@@ -1451,16 +1451,16 @@ app.post("/events", async (c) => {
               type: "mrkdwn",
               text: `Expose this message to indigest via RSS and API?\n>${ev.text}\n`,
             },
-            accessory: {
-              type: "button",
-              action_id: "indigest_yes",
-              text: { type: "plain_text", text: "Yep!" },
-              value: ev.ts,
-            },
           };
           const actions = {
             type: "actions",
             elements: [
+              {
+                type: "button",
+                action_id: "indigest_yes",
+                text: { type: "plain_text", text: "Yep!" },
+                value: ev.ts,
+              },
               {
                 type: "button",
                 action_id: "indigest_no",
