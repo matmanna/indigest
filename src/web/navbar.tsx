@@ -1,10 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { authClient } from "../lib/auth-client";
+
+import ReactDOM from 'react-dom/client'
+import './index.css'
+import posthog from 'posthog-js'
+import { PostHogProvider } from '@posthog/react'
+
+
 
 function Navbar({ active }: { active: string }) {
   const { data: session, isPending } = authClient.useSession();
   const [stars, setStars] = useState<number | null>(null);
+
 
   useEffect(() => {
     const cached = localStorage.getItem("gh_stars");
@@ -24,6 +32,11 @@ function Navbar({ active }: { active: string }) {
       })
       .catch(() => { });
   }, []);
+
+  posthog.init('phc_BCfnEJYUncGL4otpd7a7MHdtRotSvn5t634cZcnnzbBq', {
+    api_host: 'https://u.moldycrust.pizza',
+    defaults: '2026-05-30',
+  })
 
   return (
     <nav class="navbar">
@@ -72,6 +85,11 @@ function Navbar({ active }: { active: string }) {
         </button>
       )}
     </nav>
+    <StrictMode>
+    <PostHogProvider client={posthog}>
+      <App />
+    </PostHogProvider>
+  </StrictMode>
   );
 }
 

@@ -6,6 +6,20 @@ import { apiKeys, apiKeyChannels, authUser } from "../../db/schema";
 import { eq } from "drizzle-orm";
 import { aliasedTable } from "drizzle-orm/alias";
 import { getChannel as dbGetChannel } from "../../db/queries";
+import type { Channel } from "../../db/queries";
+
+export function canCreateApiKeyForChannel(
+  channel: Pick<Channel, "accessPermUsers">,
+  slackId: string,
+  options: { isLockdown: boolean; isManager: boolean },
+): boolean {
+  return (
+    options.isLockdown ||
+    options.isManager ||
+    channel.accessPermUsers.includes("*") ||
+    channel.accessPermUsers.includes(slackId)
+  );
+}
 
 export const listApiKeys = authRequiredProcedure
   .route({ method: "GET", path: "/api-keys" })
@@ -65,17 +79,13 @@ export const createApiKey = authRequiredProcedure
           throw new ORPCError("NOT_FOUND", {
             message: `Channel ${channelId} not found`,
           });
-        if (!isLockdown && !ch.accessPermUsers.includes(slackId)) {
-          const isManager = await isChannelManager(
-            channelId,
-            slackId,
-            context.slackToken,
-          );
-          if (!isManager) {
-            throw new ORPCError("FORBIDDEN", {
-              message: `You don't have access to channel ${ch.name || channelId}`,
-            });
-          }
+        const isManager = isLockdown
+          ? false
+          : await isChannelManager(channelId, slackId, context.slackToken);
+        if (!canCreateApiKeyForChannel(ch, slackId, { isLockdown, isManager })) {
+          throw new ORPCError("FORBIDDEN", {
+            message: `You don't have access to channel ${ch.name || channelId}`,
+          });
         }
       }
     }

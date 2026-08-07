@@ -50,9 +50,11 @@ export interface BotAction {
 
 // --- Helpers ---
 
-function toBool(v: unknown): boolean {
+export function parseBool(v: unknown): boolean {
   return v === "1" || v === "true";
 }
+
+export const toBool = parseBool;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function rowToChannel(r: any): Channel {
@@ -60,8 +62,8 @@ function rowToChannel(r: any): Channel {
     id: r.id,
     name: r.name,
     teamId: r.teamId,
-    enabled: toBool(r.enabled),
-    linkMode: toBool(r.linkMode),
+    enabled: parseBool(r.enabled),
+    linkMode: parseBool(r.linkMode),
     webhookUrl: r.webhookUrl,
     autoApproveUsers: r.autoApproveUsers
       ? r.autoApproveUsers.split(",").filter(Boolean)
@@ -69,10 +71,13 @@ function rowToChannel(r: any): Channel {
     approvedPosters: r.approvedPosters
       ? r.approvedPosters.split(",").filter(Boolean)
       : [],
-    accessPermUsers: r.accessPermUsers
-      ? r.accessPermUsers.split(",").filter(Boolean)
-      : ["*"],
-    trackReplies: toBool(r.trackReplies),
+    // An explicitly empty value means restricted, not public. Only a null
+    // value (for legacy rows predating the column) gets the public default.
+    accessPermUsers:
+      r.accessPermUsers == null
+        ? ["*"]
+        : r.accessPermUsers.split(",").filter(Boolean),
+    trackReplies: parseBool(r.trackReplies),
     metadataSchema: r.metadataSchema,
     createdAt: r.createdAt,
   };

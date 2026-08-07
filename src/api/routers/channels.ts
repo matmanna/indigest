@@ -4,6 +4,7 @@ import {
   publicProcedure,
   authOrApiKeyProcedure,
   authRequiredProcedure,
+  isChannelManager,
 } from "../context";
 import {
   getChannel as dbGetChannel,
@@ -11,6 +12,7 @@ import {
   listEnabledChannels as dbListEnabledChannels,
   upsertChannel as dbUpsertChannel,
 } from "../../db/queries";
+import { canCreateApiKeyForChannel } from "./apiKeys";
 
 const channelSchema = z.object({
   id: z.string(),
@@ -64,12 +66,21 @@ export const listByUser = authOrApiKeyProcedure
     const slackId = context.session?.user?.slackId;
     if (!slackId) return [];
     const channels = await dbListChannels(context.db);
-    return channels.filter(
-      (ch) =>
-        ch.accessPermUsers.includes(slackId) ||
-        ch.accessPermUsers.includes("*") ||
-        ch.accessPermUsers.includes(slackId),
+    const isLockdown = context.lockdownUsers.includes(slackId);
+    const visible = await Promise.all(
+      channels.map(async (ch) => ({
+        ch,
+        allowed: canCreateApiKeyForChannel(ch, slackId, {
+          isLockdown,
+          isManager: await isChannelManager(
+            ch.id,
+            slackId,
+            context.slackToken,
+          ),
+        }),
+      })),
     );
+    return visible.filter(({ allowed }) => allowed).map(({ ch }) => ch);
   });
 
 export const channelRouter = {

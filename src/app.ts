@@ -26,7 +26,7 @@ function getDbUrl(env: Env): string {
   return env.HYPERDRIVE_BINDING?.connectionString || env.DATABASE_URL;
 }
 
-function resolveSlackMrkdwn(text: string): string {
+export function resolveSlackMrkdwn(text: string): string {
   if (!text) return text;
   return text
     .replace(/<!here>/g, "")
@@ -43,7 +43,7 @@ function resolveSlackMrkdwn(text: string): string {
     .replace(/&gt;/g, ">");
 }
 
-function extractMessageText(msg: any): string {
+export function extractMessageText(msg: any): string {
   if (msg.blocks && msg.blocks.length > 0) {
     const parts: string[] = [];
     for (const block of msg.blocks) {
@@ -225,20 +225,20 @@ function markForwarded(channelId: string, slackTs: string): boolean {
   return true;
 }
 
-function isLinkOnly(text: string): boolean {
+export function isLinkOnly(text: string): boolean {
   const trimmed = text.trim();
   return /^https?:\/\/\S+$/.test(trimmed);
 }
 
-function isMessageEmpty(text: string): boolean {
+export function isMessageEmpty(text: string): boolean {
   return text.trim().length === 0;
 }
 
-function hasChannelPing(text: string): boolean {
+export function hasChannelPing(text: string): boolean {
   return /<!here|<!channel>/.test(text);
 }
 
-async function shouldForward(
+export async function shouldForward(
   msg: StoreMessage,
   db: any,
 ): Promise<boolean> {
@@ -267,7 +267,7 @@ async function shouldForward(
   return true;
 }
 
-function isSlackPermalink(text: string): boolean {
+export function isSlackPermalink(text: string): boolean {
   const trimmed = text.trim();
   return (
     /^https:\/\/hackclub\.slack\.com\/archives\/[A-Z0-9]+\/p\d+$/.test(
@@ -281,7 +281,7 @@ function isSlackPermalink(text: string): boolean {
 
 // --- Feed access control ---
 
-interface FeedIdentity {
+export interface FeedIdentity {
   type: "session" | "apikey";
   slackId: string;
   channelIds?: string[];
@@ -334,21 +334,41 @@ async function resolveFeedIdentity(
   return null;
 }
 
-function canAccessFeed(
+export function canAccessFeed(
   ch: StoreChannel,
   identity: FeedIdentity | null,
 ): boolean {
-  if (ch.accessPermUsers.includes("*")) return true;
-  if (!identity) return false;
   // API keys are scoped to specific channels
   if (
-    identity.type === "apikey" &&
+    identity?.type === "apikey" &&
     identity.channelIds &&
     identity.channelIds.length > 0
   ) {
     return identity.channelIds.includes(ch.id);
   }
+  if (ch.accessPermUsers.includes("*")) return true;
+  if (!identity) return false;
   return ch.accessPermUsers.includes(identity.slackId);
+}
+
+export function canApproveMessage({
+  approvedPosters,
+  clickingUser,
+  messageUser,
+  isManager,
+  isLockdown,
+}: {
+  approvedPosters: string[];
+  clickingUser: string;
+  messageUser: string;
+  isManager: boolean;
+  isLockdown: boolean;
+}): boolean {
+  if (isLockdown || isManager) return true;
+  if (approvedPosters.includes("poster") && clickingUser === messageUser) {
+    return true;
+  }
+  return approvedPosters.includes(clickingUser);
 }
 
 async function forwardToSubscribers(
@@ -1683,6 +1703,57 @@ app.post("/interactions", async (c) => {
         const { channelId, messageTs, botMessageTs, apiOnly } = privateMeta;
         const channel = await q.getChannel(db, channelId);
         if (!channel || !channel.enabled) return;
+        const client = new WebClient(env.SLACK_BOT_TOKEN);
+        let approvalHistory: any = null;
+        const storedOriginal = (
+          await q.getMessages(db, channelId, { limit: 200 })
+        ).find((m) => m.slackTs === messageTs);
+        let approvalMessageUser = storedOriginal?.userId || "";
+        if (!approvalMessageUser) {
+          try {
+            approvalHistory = await client.conversations.history({
+              channel: channelId,
+              latest: messageTs,
+              limit: 1,
+              inclusive: true,
+            });
+            approvalMessageUser =
+              (approvalHistory.messages?.[0] as any)?.user || "";
+          } catch {
+            approvalMessageUser = "";
+          }
+        }
+
+        // The modal may have been opened before authorization completed. The
+        // submission is the final security boundary: reject unauthorized
+        // users before parsing uploads, saving metadata, or forwarding.
+        const clickingUser = cb.user?.id || "";
+        const lockdownUsers = (env.LOCKDOWN_USERS || "")
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter(Boolean);
+        const isLockdown = lockdownUsers.includes(clickingUser);
+        const isManager = isLockdown
+          ? false
+          : await isChannelManager(channelId, clickingUser, slack);
+        if (!isManager && !isLockdown) {
+          if (
+            !canApproveMessage({
+              approvedPosters: channel.approvedPosters,
+              clickingUser,
+              messageUser: approvalMessageUser,
+              isManager: false,
+              isLockdown: false,
+            })
+          ) {
+            await slack.chat.postEphemeral({
+              channel: channelId,
+              user: clickingUser,
+              text: "❌ You don't have permission to approve this message.",
+            });
+            return;
+          }
+        }
 
         let schema: any = null;
         try {
@@ -1722,9 +1793,8 @@ app.post("/interactions", async (c) => {
           })()
           : "";
 
-        const client = new WebClient(env.SLACK_BOT_TOKEN);
         try {
-          const history = await client.conversations.history({
+          const history = approvalHistory || await client.conversations.history({
             channel: channelId,
             latest: messageTs,
             limit: 1,
@@ -2109,25 +2179,32 @@ app.post("/interactions", async (c) => {
             if (!isManager) {
               const msgs = await q.getMessages(db, channelId, { limit: 100 });
               const originalMsg = msgs.find((m) => m.slackTs === messageTs);
-              if (originalMsg) {
-                let allowed = true;
-                if (ch.approvedPosters.length === 0) {
-                  allowed = originalMsg.userId === clickingUser;
-                } else if (ch.approvedPosters.includes("poster")) {
-                  allowed =
-                    originalMsg.userId === clickingUser ||
-                    ch.approvedPosters.includes(clickingUser);
-                } else {
-                  allowed = ch.approvedPosters.includes(clickingUser);
-                }
-                if (!allowed) {
-                  await slack.chat.postEphemeral({
+              let messageUser = originalMsg?.userId || "";
+              if (!messageUser) {
+                try {
+                  const history = await slack.conversations.history({
                     channel: channelId,
-                    user: clickingUser,
-                    text: "❌ You don't have permission to approve this message.",
+                    latest: messageTs,
+                    limit: 1,
+                    inclusive: true,
                   });
-                  return;
-                }
+                  messageUser = (history.messages?.[0] as any)?.user || "";
+                } catch { }
+              }
+              const allowed = canApproveMessage({
+                approvedPosters: ch.approvedPosters,
+                clickingUser,
+                messageUser,
+                isManager: false,
+                isLockdown,
+              });
+              if (!allowed) {
+                await slack.chat.postEphemeral({
+                  channel: channelId,
+                  user: clickingUser,
+                  text: "❌ You don't have permission to approve this message.",
+                });
+                return;
               }
             }
             return;
@@ -2154,6 +2231,23 @@ app.post("/interactions", async (c) => {
           const msg = history.messages?.[0] as any;
           if (!msg) {
             await slackResponse(responseUrl, "Couldn't fetch that message.");
+            return;
+          }
+
+          if (
+            !canApproveMessage({
+              approvedPosters: ch.approvedPosters,
+              clickingUser,
+              messageUser: msg.user || "",
+              isManager,
+              isLockdown,
+            })
+          ) {
+            await slack.chat.postEphemeral({
+              channel: channelId,
+              user: clickingUser,
+              text: "❌ You don't have permission to approve this message.",
+            });
             return;
           }
 
