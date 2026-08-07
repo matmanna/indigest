@@ -73,6 +73,8 @@ export const botActions = pgTable(
     sourceMessageTs: text("source_message_ts").notNull(),
     botChannelId: text("bot_channel_id").notNull(),
     botMessageTs: text("bot_message_ts").notNull(),
+    userId: text("user_id"),
+    command: text("command"),
     createdAt: text("created_at").notNull().default("now()"),
   },
   (t) => ({

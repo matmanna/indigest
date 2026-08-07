@@ -29,6 +29,9 @@ function getDbUrl(env: Env): string {
 function resolveSlackMrkdwn(text: string): string {
   if (!text) return text;
   return text
+    .replace(/<!here>/g, "")
+    .replace(/<!channel>/g, "")
+    .replace(/<!everyone>/g, "")
     .replace(/<#([A-Z0-9]+)\|([^>]+)>/g, "#$2")
     .replace(/<#([A-Z0-9]+)>/g, (_, id) => `#${id}`)
     .replace(/<@([A-Z0-9]+)\|([^>]+)>/g, "@$2")
@@ -38,6 +41,25 @@ function resolveSlackMrkdwn(text: string): string {
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
+}
+
+function extractMessageText(msg: any): string {
+  if (msg.blocks && msg.blocks.length > 0) {
+    const parts: string[] = [];
+    for (const block of msg.blocks) {
+      if (block.type === "section" && block.text?.text) {
+        parts.push(block.text.text);
+      } else if (block.type === "context" && block.elements) {
+        for (const el of block.elements) {
+          if (el.type === "mrkdwn" || el.type === "plain_text") {
+            parts.push(el.text);
+          }
+        }
+      }
+    }
+    if (parts.length > 0) return parts.join("\n");
+  }
+  return msg.text || "";
 }
 
 function slackTsToTime(ts: string): Date {
@@ -56,14 +78,14 @@ async function isChannelManager(
   try {
     const conv = await slack.conversations.info({ channel: channelId });
     if ((conv.channel as any)?.creator === userId) return true;
-  } catch {}
+  } catch { }
 
   // Check if user is a workspace admin or owner (channel managers in Slack)
   try {
     const user = await slack.users.info({ user: userId });
     const u = user.user as any;
     if (u?.is_admin || u?.is_owner || u?.is_primary_owner) return true;
-  } catch {}
+  } catch { }
 
   return false;
 }
@@ -116,7 +138,7 @@ async function slackResponse(responseUrl: string, text: string) {
         replace_original: false,
       }),
     });
-  } catch {}
+  } catch { }
 }
 
 async function postPermalinkReply(
@@ -138,7 +160,7 @@ async function postPermalinkReply(
       unfurl_links: true,
       unfurl_media: true,
     } as any);
-  } catch {}
+  } catch { }
 }
 
 async function fireWebhook(ch: StoreChannel, msg: StoreMessage) {
@@ -160,7 +182,7 @@ async function fireWebhook(ch: StoreChannel, msg: StoreMessage) {
         },
       }),
     });
-  } catch {}
+  } catch { }
 }
 
 async function uploadToCDN(
@@ -278,7 +300,7 @@ async function resolveFeedIdentity(
     if (s?.user && (s.user as any).slackId) {
       return { type: "session", slackId: (s.user as any).slackId };
     }
-  } catch {}
+  } catch { }
 
   // 2. Try API key from header or ?api_key= param
   const authHeader = c.req.header("Authorization") || "";
@@ -306,7 +328,7 @@ async function resolveFeedIdentity(
           };
         }
       }
-    } catch {}
+    } catch { }
   }
 
   return null;
@@ -364,7 +386,7 @@ async function forwardToSubscribers(
       message_ts: msg.slackTs,
     });
     permalink = (r as any)?.permalink || "";
-  } catch {}
+  } catch { }
   if (!permalink) {
     const slackTsClean = msg.slackTs.replace(".", "");
     permalink = `https://slack.com/archives/${msg.channelId}/p${slackTsClean}`;
@@ -420,7 +442,7 @@ async function forwardToSubscribers(
             ? JSON.parse(msg.metadata)
             : msg.metadata;
         if (meta?.slack_permalink) forwardLink = meta.slack_permalink;
-      } catch {}
+      } catch { }
     }
     if (!forwardLink) forwardLink = permalink;
 
@@ -467,7 +489,7 @@ async function forwardToSubscribers(
                 "";
             }
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -510,13 +532,13 @@ async function forwardToSubscribers(
     const metadataSection =
       parsedMetadata && parsedSchema
         ? Object.keys(parsedMetadata)
-            .map((metaProp) => {
-              const field = parsedSchema.fields?.find(
-                (e: any) => e.action_id === metaProp,
-              );
-              return `*${field?.label || metaProp}:* ${parsedMetadata[metaProp]}`;
-            })
-            .join("\n") + "\n"
+          .map((metaProp) => {
+            const field = parsedSchema.fields?.find(
+              (e: any) => e.action_id === metaProp,
+            );
+            return `*${field?.label || metaProp}:* ${parsedMetadata[metaProp]}`;
+          })
+          .join("\n") + "\n"
         : "";
 
     console.log(
@@ -539,12 +561,12 @@ async function forwardToSubscribers(
             : forwardLink || footerText,
           blocks: metadataSection
             ? [
-                {
-                  type: "section",
-                  text: { type: "mrkdwn", text: metadataSection.trim() },
-                },
-                { type: "section", text: { type: "mrkdwn", text: footerText } },
-              ]
+              {
+                type: "section",
+                text: { type: "mrkdwn", text: metadataSection.trim() },
+              },
+              { type: "section", text: { type: "mrkdwn", text: footerText } },
+            ]
             : undefined,
         } as any);
         if (res?.ts) {
@@ -656,7 +678,7 @@ app.use("/api/*", async (c, next) => {
         req: c.req.raw,
         databaseUrl: dbUrl,
       });
-    } catch {}
+    } catch { }
   }
 
   const ctx: ORPCContext = {
@@ -743,7 +765,7 @@ async function getGithubStars(): Promise<number> {
       cachedStars = data.stargazers_count;
       starsFetchedAt = Date.now();
     }
-  } catch {}
+  } catch { }
   if (cachedStars !== null) return cachedStars;
   return 0;
 }
@@ -760,27 +782,27 @@ app.get("/site-config", async (c) => {
     ids.length === 0
       ? Promise.resolve([])
       : (async () => {
-          const slack = new WebClient(env.SLACK_BOT_TOKEN);
-          return Promise.all(
-            ids.map(async (id) => {
-              let name = id;
-              try {
-                const response = await slack.users.info({ user: id });
-                const user = response.user as any;
-                name =
-                  user?.profile?.display_name ||
-                  user?.name ||
-                  user?.real_name ||
-                  id;
-              } catch {}
-              return {
-                id,
-                name,
-                url: `https://hackclub.enterprise.slack.com/team/${id}`,
-              };
-            }),
-          );
-        })(),
+        const slack = new WebClient(env.SLACK_BOT_TOKEN);
+        return Promise.all(
+          ids.map(async (id) => {
+            let name = id;
+            try {
+              const response = await slack.users.info({ user: id });
+              const user = response.user as any;
+              name =
+                user?.profile?.display_name ||
+                user?.name ||
+                user?.real_name ||
+                id;
+            } catch { }
+            return {
+              id,
+              name,
+              url: `https://hackclub.enterprise.slack.com/team/${id}`,
+            };
+          }),
+        );
+      })(),
     getGithubStars(),
   ]);
 
@@ -1296,7 +1318,7 @@ app.post("/events", async (c) => {
           const conv = await slack.conversations.info({ channel: ev.channel });
           ch.name = (conv.channel as any)?.name || "";
           await q.upsertChannel(db, ch);
-        } catch {}
+        } catch { }
       }
 
       if (ev.type === "message" && !ev.subtype && !ev.thread_ts) {
@@ -1330,7 +1352,7 @@ app.post("/events", async (c) => {
           try {
             const u = await slack.users.info({ user: ev.user });
             userName = (u.user as any)?.name || ev.user;
-          } catch {}
+          } catch { }
           // Extract the original message permalink from the event
           // Check text first, then attachments (Slack forwards), then fallback
           let msgPermalink = "";
@@ -1394,7 +1416,7 @@ app.post("/events", async (c) => {
             let schema: any = null;
             try {
               schema = JSON.parse(ch.metadataSchema);
-            } catch {}
+            } catch { }
             if (schema && schema.fields?.length > 0) {
               try {
                 await slack.chat.postMessage({
@@ -1418,7 +1440,7 @@ app.post("/events", async (c) => {
                     },
                   ],
                 });
-              } catch {}
+              } catch { }
             }
           }
         } else {
@@ -1454,12 +1476,12 @@ app.post("/events", async (c) => {
               thread_ts: ev.ts,
               blocks: [section, actions],
             });
-          } catch {}
+          } catch { }
         }
       }
 
       // Thread reply tracking (separate from the top-level message handler above)
-      if (ev.type === "message" && !ev.subtype && !ev.bot_id && ev.thread_ts) {
+      if (ev.type === "message" && !ev.subtype && ev.thread_ts) {
         console.log(
           `Thread reply: channel=${ev.channel} thread_ts=${ev.thread_ts} ts=${ev.ts}`,
         );
@@ -1482,23 +1504,23 @@ app.post("/events", async (c) => {
               inclusive: true,
             });
             const parentMsg = parentHistory.messages?.[0] as any;
-            if (parentMsg && !parentMsg.subtype && !parentMsg.bot_id) {
+            if (parentMsg && !parentMsg.subtype) {
               let parentUserName = parentMsg.user || "";
               try {
                 const u = await slack.users.info({ user: parentMsg.user });
                 parentUserName = (u.user as any)?.name || parentMsg.user;
-              } catch {}
+              } catch { }
               await q.upsertMessage(db, {
                 slackTs: ev.thread_ts!,
                 channelId: ev.channel,
                 userId: parentMsg.user || "",
                 userName: parentUserName,
-                text: parentMsg.text || "",
+                text: resolveSlackMrkdwn(extractMessageText(parentMsg)),
                 timestamp: slackTsToTime(ev.thread_ts!).toISOString(),
                 metadata: {},
               });
             }
-          } catch {}
+          } catch { }
         }
 
         // Store the reply
@@ -1506,7 +1528,7 @@ app.post("/events", async (c) => {
         try {
           const u = await slack.users.info({ user: ev.user });
           userName = (u.user as any)?.name || ev.user;
-        } catch {}
+        } catch { }
         await q.upsertMessage(db, {
           slackTs: ev.ts,
           channelId: ev.channel,
@@ -1568,7 +1590,7 @@ app.post("/interactions", async (c) => {
       let schema: any = null;
       try {
         schema = JSON.parse(ch.metadataSchema);
-      } catch {}
+      } catch { }
       if (!schema || schema.fields?.length === 0) {
         return c.json({
           response_action: "update",
@@ -1658,46 +1680,46 @@ app.post("/interactions", async (c) => {
         cb.view?.callback_id === "metadata_modal"
       ) {
         const privateMeta = JSON.parse(cb.view.private_metadata || "{}");
-        const { channelId, messageTs, botMessageTs } = privateMeta;
+        const { channelId, messageTs, botMessageTs, apiOnly } = privateMeta;
         const channel = await q.getChannel(db, channelId);
         if (!channel || !channel.enabled) return;
 
         let schema: any = null;
         try {
           schema = JSON.parse(channel.metadataSchema);
-        } catch {}
+        } catch { }
 
         const metadata = schema
           ? await (async () => {
-              const m: Record<string, any> = {};
-              for (const field of schema.fields || []) {
-                const values =
-                  cb.view.state?.values?.[`field_${field.action_id}`]?.[
-                    field.action_id
-                  ];
-                if (!values) continue;
-                if (field.type === "multi_static_select")
-                  m[field.action_id] =
-                    values.selected_options?.map((o: any) => o.value) || [];
-                else if (field.type === "datepicker")
-                  m[field.action_id] = values.selected_date || "";
-                else if (field.type === "file_input") {
-                  const files = values.files || [];
-                  m[field.action_id] = await Promise.all(
-                    files.map(async (f: any) => {
-                      if (!f.url_private) return { ...f, cdn_url: null };
-                      const cdnUrl = await uploadToCDN(
-                        f.url_private,
-                        env.SLACK_BOT_TOKEN,
-                        env.HACK_CLUB_CDN_KEY || "",
-                      );
-                      return { ...f, cdn_url: cdnUrl };
-                    }),
-                  );
-                } else m[field.action_id] = values.value || "";
-              }
-              return JSON.stringify(m);
-            })()
+            const m: Record<string, any> = {};
+            for (const field of schema.fields || []) {
+              const values =
+                cb.view.state?.values?.[`field_${field.action_id}`]?.[
+                field.action_id
+                ];
+              if (!values) continue;
+              if (field.type === "multi_static_select")
+                m[field.action_id] =
+                  values.selected_options?.map((o: any) => o.value) || [];
+              else if (field.type === "datepicker")
+                m[field.action_id] = values.selected_date || "";
+              else if (field.type === "file_input") {
+                const files = values.files || [];
+                m[field.action_id] = await Promise.all(
+                  files.map(async (f: any) => {
+                    if (!f.url_private) return { ...f, cdn_url: null };
+                    const cdnUrl = await uploadToCDN(
+                      f.url_private,
+                      env.SLACK_BOT_TOKEN,
+                      env.HACK_CLUB_CDN_KEY || "",
+                    );
+                    return { ...f, cdn_url: cdnUrl };
+                  }),
+                );
+              } else m[field.action_id] = values.value || "";
+            }
+            return JSON.stringify(m);
+          })()
           : "";
 
         const client = new WebClient(env.SLACK_BOT_TOKEN);
@@ -1715,14 +1737,14 @@ app.post("/interactions", async (c) => {
           try {
             const u = await client.users.info({ user: msg.user });
             userName = (u.user as any)?.name || userName;
-          } catch {}
+          } catch { }
 
           await q.upsertMessage(db, {
             slackTs: messageTs,
             channelId,
             userId: msg.user || "",
             userName,
-            text: resolveSlackMrkdwn(msg.text || ""),
+            text: resolveSlackMrkdwn(extractMessageText(msg)),
             timestamp: slackTsToTime(messageTs).toISOString(),
             metadata,
           });
@@ -1732,7 +1754,7 @@ app.post("/interactions", async (c) => {
             channelId,
             userId: msg.user || "",
             userName,
-            text: resolveSlackMrkdwn(msg.text || ""),
+            text: resolveSlackMrkdwn(extractMessageText(msg)),
             timestamp: slackTsToTime(messageTs).toISOString(),
             metadata,
           });
@@ -1745,17 +1767,17 @@ app.post("/interactions", async (c) => {
           const metadataSection =
             parsedMetadata && parsedSchema
               ? Object.keys(parsedMetadata)
-                  .map((metaProp) => {
-                    const field = parsedSchema.fields?.find(
-                      (e: any) => e.action_id === metaProp,
-                    );
-                    return `*${field?.label || metaProp}:* ${parsedMetadata[metaProp]}`;
-                  })
-                  .join("\n")
+                .map((metaProp) => {
+                  const field = parsedSchema.fields?.find(
+                    (e: any) => e.action_id === metaProp,
+                  );
+                  return `*${field?.label || metaProp}:* ${parsedMetadata[metaProp]}`;
+                })
+                .join("\n")
               : "";
 
           // Find existing bot actions for this source message and edit them with metadata
-          const botActions = await q.getBotActionsBySource(db, 
+          const botActions = await q.getBotActionsBySource(db,
             channelId,
             messageTs,
           );
@@ -1802,20 +1824,22 @@ app.post("/interactions", async (c) => {
           }
 
           // Also forward to any new subscribers that weren't captured in the initial forward
-          await forwardToSubscribers(
-            {
-              slackTs: messageTs,
-              channelId,
-              userId: msg.user || "",
-              userName,
-              text: resolveSlackMrkdwn(msg.text || ""),
-              timestamp: slackTsToTime(messageTs).toISOString(),
-              metadata,
-            },
-            channel,
-            db,
-            slack,
-          );
+          if (!apiOnly) {
+            await forwardToSubscribers(
+              {
+                slackTs: messageTs,
+                channelId,
+                userId: msg.user || "",
+                userName,
+                text: resolveSlackMrkdwn(extractMessageText(msg)),
+                timestamp: slackTsToTime(messageTs).toISOString(),
+                metadata,
+              },
+              channel,
+              db,
+              slack,
+            );
+          }
           // if (channel.linkMode) await postPermalinkReply(client, channelId, messageTs);
 
           // Update the bot's prompt to show approved state
@@ -1860,12 +1884,13 @@ app.post("/interactions", async (c) => {
         return;
       }
 
-      // Backfill shortcut: manually pub a message
+      // Backfill shortcuts: manually pub a message
       if (cb.type === "message_action") {
         const channelId = cb.channel?.id;
         const messageTs = cb.message?.ts;
         const triggerId = cb.trigger_id;
         const clickingUser = cb.user?.id || "";
+        const apiOnly = cb.callback_id === "backfill_api_only";
 
         if (!channelId || !messageTs) {
           await slackResponse(
@@ -1892,8 +1917,9 @@ app.post("/interactions", async (c) => {
             if (!isManager) {
               const ch = await q.getChannel(db, channelId);
               if (!ch || !ch.enabled) {
-                await slack.chat.postMessage({
+                await slack.chat.postEphemeral({
                   channel: channelId,
+                  user: clickingUser,
                   text: "❌ This channel isn't enabled for indigest. Run `/in pub` first.",
                 });
                 return;
@@ -1908,19 +1934,25 @@ app.post("/interactions", async (c) => {
                 inclusive: true,
               });
               const msg = history.messages?.[0] as any;
-              if (!msg || msg.subtype || msg.bot_id) {
-                await slack.chat.postMessage({
+              if (!msg) {
+                await slack.chat.postEphemeral({
                   channel: channelId,
-                  text: "❌ That message can't be added to the feed (bot message or system message).",
+                  user: clickingUser,
+                  text: "❌ That message can't be added to the feed (system message).",
                 });
                 return;
               }
 
               let userName = msg.user || "";
-              try {
-                const u = await slack.users.info({ user: msg.user });
-                userName = (u.user as any)?.name || msg.user;
-              } catch {}
+              const userId = msg.user || msg.bot_id || "";
+              if (msg.user) {
+                try {
+                  const u = await slack.users.info({ user: msg.user });
+                  userName = (u.user as any)?.name || msg.user;
+                } catch { }
+              } else if (msg.bot_id) {
+                userName = msg.username || msg.bot_id;
+              }
 
               let msgPermalink = "";
               if (isSlackPermalink(msg.text)) {
@@ -1945,12 +1977,43 @@ app.post("/interactions", async (c) => {
                 : {};
 
               const ch = await q.getChannel(db, channelId);
+
+              // If channel has a metadata schema, open modal instead of posting immediately
+              if (ch?.metadataSchema) {
+                let schema: any = null;
+                try {
+                  schema = JSON.parse(ch.metadataSchema);
+                } catch { }
+                if (schema && schema.fields?.length > 0) {
+                  try {
+                    const { openMetadataModal } = await import("./api/modal");
+                    await openMetadataModal(
+                      slack,
+                      triggerId,
+                      channelId,
+                      messageTs,
+                      schema,
+                      undefined,
+                      apiOnly,
+                    );
+                  } catch (err: any) {
+                    console.error("backfill openMetadataModal failed:", err.message);
+                    await slack.chat.postEphemeral({
+                      channel: channelId,
+                      user: clickingUser,
+                      text: `❌ Error opening form: ${err.message}`,
+                    });
+                  }
+                  return;
+                }
+              }
+
               await q.upsertMessage(db, {
                 slackTs: messageTs,
                 channelId,
-                userId: msg.user || "",
+                userId,
                 userName,
-                text: resolveSlackMrkdwn(msg.text || ""),
+                text: resolveSlackMrkdwn(extractMessageText(msg)),
                 timestamp: slackTsToTime(messageTs).toISOString(),
                 metadata,
               });
@@ -1958,18 +2021,19 @@ app.post("/interactions", async (c) => {
               const savedMsg = {
                 slackTs: messageTs,
                 channelId,
-                userId: msg.user || "",
+                userId,
                 userName,
-                text: resolveSlackMrkdwn(msg.text || ""),
+                text: resolveSlackMrkdwn(extractMessageText(msg)),
                 timestamp: slackTsToTime(messageTs).toISOString(),
                 metadata,
               };
               if (ch) await fireWebhook(ch, savedMsg);
-              if (ch) await forwardToSubscribers(savedMsg, ch, db, slack);
+              if (ch && !apiOnly) await forwardToSubscribers(savedMsg, ch, db, slack);
             } catch (err: any) {
               console.error("backfill shortcut error:", err.message);
-              await slack.chat.postMessage({
+              await slack.chat.postEphemeral({
                 channel: channelId,
+                user: clickingUser,
                 text: `❌ Error backfilling message: ${err.message}`,
               });
             }
@@ -2003,7 +2067,7 @@ app.post("/interactions", async (c) => {
           let schema: any = null;
           try {
             schema = JSON.parse(ch.metadataSchema);
-          } catch {}
+          } catch { }
           if (schema && schema.fields?.length > 0) {
             const { openMetadataModal } = await import("./api/modal");
             try {
@@ -2097,14 +2161,14 @@ app.post("/interactions", async (c) => {
           try {
             const u = await slack.users.info({ user: msg.user });
             userName = (u.user as any)?.name || userName;
-          } catch {}
+          } catch { }
 
           await q.upsertMessage(db, {
             slackTs: messageTs,
             channelId,
             userId: msg.user || "",
             userName,
-            text: resolveSlackMrkdwn(msg.text || ""),
+            text: resolveSlackMrkdwn(extractMessageText(msg)),
             timestamp: slackTsToTime(messageTs).toISOString(),
             metadata: {},
           });
@@ -2114,7 +2178,7 @@ app.post("/interactions", async (c) => {
             channelId,
             userId: msg.user || "",
             userName,
-            text: resolveSlackMrkdwn(msg.text || ""),
+            text: resolveSlackMrkdwn(extractMessageText(msg)),
             timestamp: slackTsToTime(messageTs).toISOString(),
             metadata: {},
           };
@@ -2247,6 +2311,20 @@ const slackSlashCommand = async (c: any) => {
     }
   };
 
+  const logCommand = async (command: string, db: any) => {
+    try {
+      await db.insert(schema.botActions).values({
+        type: "command",
+        sourceChannelId,
+        sourceMessageTs: "0",
+        botChannelId: sourceChannelId,
+        botMessageTs: "0",
+        userId,
+        command,
+      });
+    } catch {}
+  };
+
   c.header("Content-Type", "application/json");
   c.header("X-Slack-Response-Accepted", "1");
   c.res = new Response(
@@ -2308,7 +2386,7 @@ const slackSlashCommand = async (c: any) => {
             channel: targetChannelId,
           });
           name = (conv.channel as any)?.name || targetChannelId;
-        } catch {}
+        } catch { }
         const auth = await slack.auth.test();
         ch = {
           id: targetChannelId,
@@ -2360,6 +2438,7 @@ const slackSlashCommand = async (c: any) => {
             if (!target) {
               ch.autoApproveUsers = ["*"];
               await q.upsertChannel(db, ch);
+              await logCommand("pub auto *", db);
               await respond(
                 `📰 Auto-approve enabled for all users in #${ch.name}.\nRSS: ${baseUrl}/feed/${targetChannelId}\nJSON: ${baseUrl}/feed/${targetChannelId}.json`,
               );
@@ -2390,6 +2469,7 @@ const slackSlashCommand = async (c: any) => {
             }
             ch.autoApproveUsers.push(target);
             await q.upsertChannel(db, ch);
+            await logCommand(`pub auto <@${target}>`, db);
             await respond(
               `📰 Auto-approve enabled for <@${target}> in #${ch.name}.\nRSS: ${baseUrl}/feed/${targetChannelId}\nJSON: ${baseUrl}/feed/${targetChannelId}.json`,
             );
@@ -2416,10 +2496,12 @@ const slackSlashCommand = async (c: any) => {
                 ? "this channel"
                 : `#${ch.name}`;
             if (ch.linkMode) {
+              await logCommand("pub link on", db);
               await respond(
                 `🔗 Link mode enabled for ${label}. Approved messages will get an unfurlable permalink reply.\nRSS: ${baseUrl}/feed/${targetChannelId}\nJSON: ${baseUrl}/feed/${targetChannelId}.json`,
               );
             } else {
+              await logCommand("pub link off", db);
               await respond(`🔗 Link mode disabled for ${label}.`);
             }
             return;
@@ -2433,6 +2515,7 @@ const slackSlashCommand = async (c: any) => {
             ch.enabled = true;
             ch.autoApproveUsers = [];
             await q.upsertChannel(db, ch);
+            await logCommand("pub manual", db);
             const label =
               targetChannelId === sourceChannelId
                 ? "this channel"
@@ -2453,6 +2536,7 @@ const slackSlashCommand = async (c: any) => {
             ch.trackReplies = !ch.trackReplies;
             ch.enabled = true;
             await q.upsertChannel(db, ch);
+            await logCommand(`pub replies ${ch.trackReplies ? "on" : "off"}`, db);
             const label =
               targetChannelId === sourceChannelId
                 ? "this channel"
@@ -2480,6 +2564,7 @@ const slackSlashCommand = async (c: any) => {
           ch.enabled = true;
           ch.autoApproveUsers = [];
           await q.upsertChannel(db, ch);
+          await logCommand("pub", db);
           const label =
             targetChannelId === sourceChannelId ? "" : ` in #${ch.name}`;
           await respond(
@@ -2498,6 +2583,7 @@ const slackSlashCommand = async (c: any) => {
             if (!target) {
               ch.autoApproveUsers = [];
               await q.upsertChannel(db, ch);
+              await logCommand("unpub auto *", db);
               await respond(
                 `Auto-approve disabled for all users in #${ch.name}.`,
               );
@@ -2507,6 +2593,7 @@ const slackSlashCommand = async (c: any) => {
               (id) => id !== target,
             );
             await q.upsertChannel(db, ch);
+            await logCommand(`unpub auto <@${target}>`, db);
             await respond(
               `Auto-approve disabled for <@${target}> in #${ch.name}.`,
             );
@@ -2525,6 +2612,7 @@ const slackSlashCommand = async (c: any) => {
           }
           ch.enabled = false;
           await q.upsertChannel(db, ch);
+          await logCommand("unpub", db);
           const label =
             targetChannelId === sourceChannelId ? "" : ` in #${ch.name}`;
           await respond(`indigest unpub'd${label}.`);
@@ -2609,6 +2697,7 @@ const slackSlashCommand = async (c: any) => {
 
           await q.addSubscription(db, sourceChannelId, sourceId);
           cachedGraph = null;
+          await logCommand(`sub #${sourceName}`, db);
           await respond(
             `📰 Subscribed to #${sourceName}. Messages pub'd there will be forwarded here.`,
           );
@@ -2681,6 +2770,7 @@ const slackSlashCommand = async (c: any) => {
 
           await q.removeSubscription(db, sourceChannelId, sourceId);
           cachedGraph = null;
+          await logCommand(`unsub #${sourceName}`, db);
           await respond(`📰 Unsubscribed from #${sourceName}.`);
           return;
         }
@@ -2696,7 +2786,7 @@ const slackSlashCommand = async (c: any) => {
             });
             const creator = (conv.channel as any)?.creator;
             if (creator === userId) perms.push("channel creator");
-          } catch {}
+          } catch { }
           if (lockdownUsers.includes(userId)) perms.push("lockdown override");
           const permStr =
             perms.length > 0
@@ -2792,6 +2882,7 @@ const slackSlashCommand = async (c: any) => {
             if (subcmd === "clear") {
               ch.webhookUrl = "";
               await q.upsertChannel(db, ch);
+              await logCommand("webhook clear", db);
               await respond("Webhook cleared.");
               return;
             }
@@ -2802,6 +2893,7 @@ const slackSlashCommand = async (c: any) => {
             }
             ch.webhookUrl = url;
             await q.upsertChannel(db, ch);
+            await logCommand(`webhook set`, db);
             await respond(`📰 Webhook set to ${url}`);
             return;
           }
@@ -2846,6 +2938,7 @@ const slackSlashCommand = async (c: any) => {
             if (subcmd === "clear") {
               ch.metadataSchema = "";
               await q.upsertChannel(db, ch);
+              await logCommand("schema clear", db);
               await respond("Metadata schema cleared.");
               return;
             }
@@ -2867,6 +2960,7 @@ const slackSlashCommand = async (c: any) => {
                 }
                 ch.metadataSchema = JSON.stringify(parsed);
                 await q.upsertChannel(db, ch);
+                await logCommand("schema set", db);
                 await respond(
                   `📰 Metadata schema set with ${parsed.fields.length} field(s).`,
                 );
@@ -2906,6 +3000,7 @@ const slackSlashCommand = async (c: any) => {
             if (subcmd === "clear") {
               ch.approvedPosters = [];
               await q.upsertChannel(db, ch);
+              await logCommand("perms clear", db);
               await respond(
                 "Poster permissions cleared. Back to default: only the original poster and channel managers can approve.",
               );
@@ -2934,6 +3029,7 @@ const slackSlashCommand = async (c: any) => {
 
             ch.approvedPosters = posterMode ? ["poster", ...userIds] : userIds;
             await q.upsertChannel(db, ch);
+            await logCommand(`perms ${posterMode ? "poster" : userIds.join(",")}`, db);
             if (posterMode && userIds.length > 0) {
               const users = userIds.map((id) => `<@${id}>`).join(", ");
               await respond(
