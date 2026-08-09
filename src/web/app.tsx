@@ -1,4 +1,3 @@
-import { createRoot } from "react-dom/client";
 import { useState, useEffect, useCallback } from "react";
 import {
   ReactFlow,
@@ -13,7 +12,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "./lockdown";
-import { renderNavbar } from "./navbar";
+import { renderPage } from "./layout";
 
 const TEAM_ID = "T024F7C8B";
 const slackLink = (channelId: string) =>
@@ -54,8 +53,6 @@ const highlightJson = (json: string): string =>
       return `<span class="json-number">${m}</span>`;
     },
   );
-
-renderNavbar("map");
 
 interface GraphNode {
   id: string;
@@ -372,4 +369,4 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("app")!).render(<App />);
+renderPage("map", <App />);

@@ -1,10 +1,7 @@
 import { useState, useEffect } from "react";
-import { createRoot } from "react-dom/client";
-import { renderNavbar } from "./navbar";
+import { renderPage } from "./layout";
 import { authClient } from "../lib/auth-client";
 import "./lockdown";
-
-renderNavbar("usage");
 
 function KeysList() {
   const { data: session, isPending } = authClient.useSession();
@@ -157,10 +154,10 @@ function KeysList() {
   );
 }
 
-createRoot(document.getElementById("app")!).render(
+renderPage("keys", (
   <div className="markdown-body">
     <h1>integrate with indigest</h1>
     {/** <p>for now, all keys are read-only</p>**/}
     <KeysList />
-  </div>,
-);
+  </div>
+));

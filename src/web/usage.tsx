@@ -1,10 +1,7 @@
 import Markdown from "react-markdown";
-import { createRoot } from "react-dom/client";
 import remarkGfm from "remark-gfm";
 import "./lockdown";
-import { renderNavbar } from "./navbar";
-
-renderNavbar("usage");
+import { renderPage } from "./layout";
 
 const markdown = `# Slack Bot Usage
 
@@ -73,8 +70,8 @@ If you want to add an older message to the feed without waiting for the Yep!/No 
 
 - \`/in status\` — Show channel status, feeds, and permissions.`;
 
-createRoot(document.getElementById("app")!).render(
+renderPage("usage", (
   <div className="markdown-body">
     <Markdown remarkPlugins={[remarkGfm]}>{markdown}</Markdown>
-  </div>,
-);
+  </div>
+));

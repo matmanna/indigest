@@ -1,15 +1,7 @@
-import { useState, useEffect, StrictMode } from "react";
-import { createRoot } from "react-dom/client";
+import { useState, useEffect } from "react";
 import { authClient } from "../lib/auth-client";
 
-import ReactDOM from 'react-dom/client'
-import './index.css'
-import posthog from 'posthog-js'
-import { PostHogProvider } from '@posthog/react'
-
-
-
-function Navbar({ active }: { active: string }) {
+export function Navbar({ active }: { active: string }) {
   const { data: session, isPending } = authClient.useSession();
   const [stars, setStars] = useState<number | null>(null);
 
@@ -33,67 +25,54 @@ function Navbar({ active }: { active: string }) {
       .catch(() => { });
   }, []);
 
-  posthog.init('phc_BCfnEJYUncGL4otpd7a7MHdtRotSvn5t634cZcnnzbBq', {
-    api_host: 'https://u.moldycrust.pizza',
-    defaults: '2026-05-30',
-  })
-
   return (
-    <nav class="navbar">
-      <a href="/" class="navbar-brand">
-        indigest
-      </a>
-      <div class="navbar-links navbar-links-main">
-        <a href="/" class={active === "map" ? "active" : ""}>
-          feed map
+    <>
+      <nav class="navbar">
+        <a href="/" class="navbar-brand">
+          indigest
         </a>
-        <a href="/docs.html" class={active === "docs" ? "active" : ""}>
-          api docs
-        </a>
-        <a href="/usage.html" class={active === "usage" ? "active" : ""}>
-          usage
-        </a>
-
-        <a href="https://github.com/matmanna/indigest">
-          github (★ {stars ?? "?"}) ↗
-          <span class="badge rot-badge">🫵 have you starred yet??? </span>
-          {/* (⭐ {stars ?? "?"})          {' '} 〉 */}
-        </a>
-      </div>
-      {isPending ? (
-        <p>loading...</p>
-      ) : session?.user ? (
-        <div class="navbar-links">
-          <a href="/keys.html" class={active === "keys" ? "active" : ""}>
-            your keys
+        <div class="navbar-links navbar-links-main">
+          <a href="/" class={active === "map" ? "active" : ""}>
+            feed map
           </a>
-          <button class="button" onClick={() => authClient.signOut()}>
-            Log out ({session.user.slackId})
-          </button>
-        </div>
-      ) : (
-        <button
-          class="button"
-          onClick={() => {
-            authClient.signIn.oauth2({
-              providerId: "hackclub",
-              callbackURL: "/",
-            });
-          }}
-        >
-          Log in with Hack Club
-        </button>
-      )}
-    </nav>
-    <StrictMode>
-    <PostHogProvider client={posthog}>
-      <App />
-    </PostHogProvider>
-  </StrictMode>
-  );
-}
+          <a href="/docs.html" class={active === "docs" ? "active" : ""}>
+            api docs
+          </a>
+          <a href="/usage.html" class={active === "usage" ? "active" : ""}>
+            usage
+          </a>
 
-export function renderNavbar(active: string) {
-  const el = document.getElementById("navbar");
-  if (el) createRoot(el).render(<Navbar active={active} />);
+          <a href="https://github.com/matmanna/indigest">
+            github (★ {stars ?? "?"}) ↗
+            <span class="badge rot-badge">🫵 have you starred yet??? </span>
+            {/* (⭐ {stars ?? "?"})          {' '} 〉 */}
+          </a>
+        </div>
+        {isPending ? (
+          <p>loading...</p>
+        ) : session?.user ? (
+          <div class="navbar-links">
+            <a href="/keys.html" class={active === "keys" ? "active" : ""}>
+              your keys
+            </a>
+            <button class="button" onClick={() => authClient.signOut()}>
+              Log out ({session.user.slackId})
+            </button>
+          </div>
+        ) : (
+          <button
+            class="button"
+            onClick={() => {
+              authClient.signIn.oauth2({
+                providerId: "hackclub",
+                callbackURL: "/",
+              });
+            }}
+          >
+            Log in with Hack Club
+          </button>
+        )}
+      </nav>
+    </>
+  );
 }
