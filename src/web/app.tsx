@@ -106,6 +106,9 @@ function ChannelNode({ data }: { data: any }) {
             link mode: {data.linkMode ? "yes" : "no"}
           </div>
         )}
+        {data.metadataRequired && (
+          <div class="node-detail">metadata: required</div>
+        )}
         {schema && (
           <details class="node-details">
             <summary>metadata schema</summary>

@@ -61,6 +61,7 @@ _tldr: if you forget what to do, run `/in`_
 | `/in schema set <json>`  | Set metadata schema (see below)                                      |
 | `/in schema get`         | View current metadata schema                                         |
 | `/in schema clear`       | Remove metadata schema                                               |
+| `/in schema required on\|off` | Require metadata before forwarding messages                         |
 
 ## publishing
 

@@ -18,7 +18,10 @@ export interface MetadataSchema {
   fields: SchemaField[];
 }
 
-function buildBlocks(schema: MetadataSchema): any[] {
+function buildBlocks(
+  schema: MetadataSchema,
+  initialMetadata: Record<string, any> = {},
+): any[] {
   const blocks: any[] = [
     {
       type: "header",
@@ -29,6 +32,7 @@ function buildBlocks(schema: MetadataSchema): any[] {
 
   for (const field of schema.fields) {
     const element: any = { type: field.type, action_id: field.action_id };
+    const initialValue = initialMetadata[field.action_id] ?? field.initial_value;
 
     switch (field.type) {
       case "plain_text_input":
@@ -37,7 +41,7 @@ function buildBlocks(schema: MetadataSchema): any[] {
         element.placeholder = field.placeholder
           ? { type: "plain_text", text: field.placeholder }
           : undefined;
-        element.initial_value = field.initial_value;
+        element.initial_value = initialValue;
         element.multiline = field.multiline;
         element.min_length = field.min_length;
         element.max_length = field.max_length;
@@ -47,7 +51,7 @@ function buildBlocks(schema: MetadataSchema): any[] {
         element.placeholder = field.placeholder
           ? { type: "plain_text", text: field.placeholder }
           : undefined;
-        element.initial_value = field.initial_value;
+        element.initial_value = initialValue;
         element.min_length = field.min_length;
         element.max_length = field.max_length;
         element.is_decimal_allowed = false;
@@ -62,13 +66,32 @@ function buildBlocks(schema: MetadataSchema): any[] {
           text: { type: "plain_text", text: o.label },
           value: o.value,
         }));
+        if (field.type === "static_select" && initialValue) {
+          const option = (field.options || []).find(
+            (o) => o.value === initialValue,
+          );
+          if (option) {
+            element.initial_option = {
+              text: { type: "plain_text", text: option.label },
+              value: option.value,
+            };
+          }
+        }
+        if (field.type === "multi_static_select" && Array.isArray(initialValue)) {
+          element.initial_options = (field.options || [])
+            .filter((o) => initialValue.includes(o.value))
+            .map((o) => ({
+              text: { type: "plain_text", text: o.label },
+              value: o.value,
+            }));
+        }
         break;
 
       case "datepicker":
         element.placeholder = field.placeholder
           ? { type: "plain_text", text: field.placeholder }
           : undefined;
-        element.initial_date = field.initial_value;
+        element.initial_date = initialValue;
         break;
 
       case "file_input":
@@ -79,6 +102,7 @@ function buildBlocks(schema: MetadataSchema): any[] {
     blocks.push({
       type: "input",
       block_id: `field_${field.action_id}`,
+      optional: true,
       label: { type: "plain_text", text: field.label, emoji: true },
       element,
     });
@@ -109,17 +133,22 @@ function extractMetadata(
 
     switch (field.type) {
       case "multi_static_select":
-        metadata[field.action_id] =
-          values.selected_options?.map((o) => o.value) || [];
+        if (values.selected_options?.length) {
+          metadata[field.action_id] = values.selected_options.map(
+            (o) => o.value,
+          );
+        }
         break;
       case "datepicker":
-        metadata[field.action_id] = values.selected_date || "";
+        if (values.selected_date) {
+          metadata[field.action_id] = values.selected_date;
+        }
         break;
       case "file_input":
-        metadata[field.action_id] = values.files || [];
+        if (values.files?.length) metadata[field.action_id] = values.files;
         break;
       default:
-        metadata[field.action_id] = values.value || "";
+        if (values.value) metadata[field.action_id] = values.value;
     }
   }
   return metadata;
@@ -133,8 +162,9 @@ export async function openMetadataModal(
   schema: MetadataSchema,
   botMessageTs?: string,
   apiOnly?: boolean,
+  initialMetadata: Record<string, any> = {},
 ) {
-  const blocks = buildBlocks(schema);
+  const blocks = buildBlocks(schema, initialMetadata);
 
   await client.views.open({
     trigger_id: triggerId,

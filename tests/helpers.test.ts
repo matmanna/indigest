@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   canAccessFeed,
+  findExistingForward,
+  hasProvidedMetadata,
   hasChannelPing,
+  hasRecentSubstantiveMessage,
   isLinkOnly,
   isMessageEmpty,
   isSlackPermalink,
+  metadataRequirementSatisfied,
   shouldForward,
 } from "../src/app";
 import { generateApiKey, hashSecret, verifySecret } from "../src/lib/api-keys";
@@ -13,7 +17,7 @@ import { parseBool, toBool } from "../src/db/queries";
 const channel = (accessPermUsers = ["*"]) => ({
   id: "C1", name: "feed", teamId: "T1", enabled: true, linkMode: false,
   webhookUrl: "", autoApproveUsers: [], approvedPosters: [], accessPermUsers,
-  trackReplies: false, metadataSchema: "", createdAt: "",
+  trackReplies: false, metadataSchema: "", metadataRequired: false, createdAt: "",
 });
 const msg = (text: string) => ({ slackTs: "1.1", channelId: "C1", userId: "U1", userName: "u", text, timestamp: new Date().toISOString(), metadata: {} });
 
@@ -34,13 +38,54 @@ describe("pure helpers", () => {
   });
   test("documents ping behavior (raw Slack syntax only)", () => {
     expect(hasChannelPing("<!here>")).toBe(true);
+    expect(hasChannelPing("<!channel>")).toBe(true);
+    expect(hasChannelPing("<!everyone>")).toBe(true);
     expect(hasChannelPing("here")).toBe(false);
+  });
+  test("suppresses group pings after a recent substantive message", () => {
+    const current = {
+      slackTs: "2.2",
+      text: "",
+      rawText: "<!everyone>",
+    };
+    expect(
+      hasRecentSubstantiveMessage(current, [
+        { slackTs: "1.1", text: "announcement" },
+      ]),
+    ).toBe(true);
+    expect(
+      hasRecentSubstantiveMessage(current, [
+        { slackTs: "1.1", text: "<!channel>" },
+      ]),
+    ).toBe(false);
   });
   test("forward policy prioritizes permalinks and empty messages", async () => {
     const db = {};
     expect(await shouldForward(msg("https://hackclub.slack.com/archives/C1/p123"), db)).toBe(true);
     expect(await shouldForward(msg("https://example.com"), db)).toBe(false);
     expect(await shouldForward(msg("   "), db)).toBe(true);
+  });
+  test("uses an existing pub bot action as the update target", () => {
+    const action = {
+      type: "pub",
+      sourceChannelId: "C1",
+      sourceMessageTs: "1.1",
+      botChannelId: "C2",
+      botMessageTs: "9.9",
+      createdAt: "",
+    };
+    expect(findExistingForward([action], "C2")?.botMessageTs).toBe("9.9");
+    expect(findExistingForward([{ ...action, type: "approve" }], "C2")).toBeUndefined();
+    expect(findExistingForward([action], "C3")).toBeUndefined();
+  });
+  test("recognizes when metadata has actually been provided", () => {
+    expect(hasProvidedMetadata({})).toBe(false);
+    expect(hasProvidedMetadata({ title: "" })).toBe(false);
+    expect(hasProvidedMetadata('{"title":"Launch"}')).toBe(true);
+    expect(hasProvidedMetadata({ tags: ["news"] })).toBe(true);
+    expect(metadataRequirementSatisfied(false, {})).toBe(true);
+    expect(metadataRequirementSatisfied(true, {})).toBe(false);
+    expect(metadataRequirementSatisfied(true, { title: "Launch" })).toBe(true);
   });
   test("enforces public and restricted feed access", () => {
     expect(canAccessFeed(channel(), null)).toBe(true);

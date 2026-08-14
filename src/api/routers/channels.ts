@@ -26,6 +26,7 @@ const channelSchema = z.object({
   accessPermUsers: z.array(z.string()),
   trackReplies: z.boolean(),
   metadataSchema: z.string(),
+  metadataRequired: z.boolean(),
   createdAt: z.string(),
 });
 

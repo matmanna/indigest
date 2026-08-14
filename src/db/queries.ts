@@ -16,6 +16,7 @@ export interface Channel {
   accessPermUsers: string[];
   trackReplies: boolean;
   metadataSchema: string;
+  metadataRequired: boolean;
   createdAt: string;
 }
 
@@ -27,6 +28,8 @@ export interface Message {
   userId: string;
   userName: string;
   text: string;
+  /** Original Slack text, retained in memory for forwarding-policy checks. */
+  rawText?: string;
   timestamp: string;
   metadata: any;
 }
@@ -81,6 +84,7 @@ function rowToChannel(r: any): Channel {
         : r.accessPermUsers.split(",").filter(Boolean),
     trackReplies: parseBool(r.trackReplies),
     metadataSchema: r.metadataSchema,
+    metadataRequired: parseBool(r.metadataRequired),
     createdAt: r.createdAt,
   };
 }
@@ -143,6 +147,7 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
       accessPermUsers: ch.accessPermUsers.join(","),
       trackReplies: ch.trackReplies ? "1" : "0",
       metadataSchema: ch.metadataSchema,
+      metadataRequired: ch.metadataRequired ? "1" : "0",
       createdAt: sql`COALESCE(NULLIF((SELECT created_at FROM channels WHERE id = ${ch.id}), ''), to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))`,
     })
     .onConflictDoUpdate({
@@ -158,6 +163,7 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
         accessPermUsers: ch.accessPermUsers.join(","),
         trackReplies: ch.trackReplies ? "1" : "0",
         metadataSchema: ch.metadataSchema,
+        metadataRequired: ch.metadataRequired ? "1" : "0",
       },
     });
 }
@@ -165,6 +171,17 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
 export async function listChannels(db: DB): Promise<Channel[]> {
   const rows = await db.select().from(schema.channels);
   return rows.map(rowToChannel);
+}
+
+export async function updateChannelName(
+  db: DB,
+  channelId: string,
+  name: string,
+): Promise<void> {
+  await db
+    .update(schema.channels)
+    .set({ name })
+    .where(eq(schema.channels.id, channelId));
 }
 
 export async function listEnabledChannels(db: DB): Promise<Channel[]> {

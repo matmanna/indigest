@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { canAccessFeed, canApproveMessage, canEditBotMessage, upsertMetadataBlock } from "../src/app";
 import { canCreateApiKeyForChannel } from "../src/api/routers/apiKeys";
 
-const feed = (users: string[]) => ({ id: "C1", name: "", teamId: "", enabled: true, linkMode: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], accessPermUsers: users, trackReplies: false, metadataSchema: "", createdAt: "" });
+const feed = (users: string[]) => ({ id: "C1", name: "", teamId: "", enabled: true, linkMode: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], accessPermUsers: users, trackReplies: false, metadataSchema: "", metadataRequired: false, createdAt: "" });
 
 describe("feed access invariants", () => {
   test("wildcard always allows", () => expect(canAccessFeed(feed(["*"]), null)).toBe(true));

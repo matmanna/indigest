@@ -10,7 +10,7 @@ const suffix = `test-${Date.now()}`;
 const sourceId = `C-${suffix}`;
 const subscriberId = `C-sub-${suffix}`;
 
-const channel = (id: string, enabled = true): q.Channel => ({ id, name: id, teamId: "T1", enabled, linkMode: false, webhookUrl: "", autoApproveUsers: ["a", "b"], approvedPosters: [], accessPermUsers: ["*"], trackReplies: false, metadataSchema: "", createdAt: "" });
+const channel = (id: string, enabled = true): q.Channel => ({ id, name: id, teamId: "T1", enabled, linkMode: false, webhookUrl: "", autoApproveUsers: ["a", "b"], approvedPosters: [], accessPermUsers: ["*"], trackReplies: false, metadataSchema: "", metadataRequired: false, createdAt: "" });
 const message = (slackTs: string, text: string, extra: Partial<q.Message> = {}): q.Message => ({ slackTs, channelId: sourceId, userId: "U1", userName: "Ada", text, timestamp: `2026-01-01T00:00:${slackTs.split(".")[1] || "00"}.000Z`, metadata: { ok: true }, ...extra });
 
 beforeAll(async () => {
@@ -63,6 +63,11 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("database queries", () => {
     expect(actions[0]?.type).toBe("approve");
     expect(actions[0]?.userId).toBe("U123");
     expect(actions[0]?.command).toBe("indigest_yes");
+    await q.addBotAction(db, { type: "pub", sourceChannelId: sourceId, sourceMessageTs: "1.1", botChannelId: subscriberId, botMessageTs: "3.3", createdAt: "" });
+    const forwards = (await q.getBotActionsBySource(db, sourceId, "1.1"))
+      .filter((action) => action.type === "pub" && action.botChannelId === subscriberId);
+    expect(forwards).toHaveLength(1);
+    expect(forwards[0]?.botMessageTs).toBe("3.3");
     const graph = await q.getGraphData(db);
     expect(graph.channels.some((c) => c.id === sourceId)).toBe(true);
     expect(graph.subscriberChannels.some((c) => c.id === subscriberId)).toBe(true);
@@ -71,9 +76,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("database queries", () => {
   });
 
   test("boolean and comma-separated values round-trip consistently", async () => {
-    await q.upsertChannel(db, { ...channel(sourceId), enabled: true, autoApproveUsers: ["a", "b"], accessPermUsers: ["*"] });
+    await q.upsertChannel(db, { ...channel(sourceId), enabled: true, metadataRequired: true, autoApproveUsers: ["a", "b"], accessPermUsers: ["*"] });
     const got = await q.getChannel(db, sourceId);
     expect(got?.enabled).toBe(true);
+    expect(got?.metadataRequired).toBe(true);
     expect(got?.autoApproveUsers).toEqual(["a", "b"]);
     expect(got?.accessPermUsers).toEqual(["*"]);
   });

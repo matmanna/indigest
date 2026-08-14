@@ -26,6 +26,27 @@ function getDbUrl(env: Env): string {
   return env.HYPERDRIVE_BINDING?.connectionString || env.DATABASE_URL;
 }
 
+async function syncChannelName(
+  db: any,
+  slack: WebClient,
+  channel: StoreChannel,
+): Promise<void> {
+  try {
+    const info = await slack.conversations.info({ channel: channel.id });
+    const name = (info.channel as any)?.name;
+    if (typeof name === "string" && name && name !== channel.name) {
+      channel.name = name;
+      await q.updateChannelName(db, channel.id, name);
+      console.log(`Updated channel name in DB: ${channel.id} -> #${name}`);
+    }
+  } catch (err: any) {
+    console.warn(
+      `Unable to sync channel name for ${channel.id}:`,
+      err?.data?.error || err?.message || err,
+    );
+  }
+}
+
 export function resolveSlackMrkdwn(text: string): string {
   if (!text) return text;
   return text
@@ -213,18 +234,6 @@ async function uploadToCDN(
 
 // --- Forwarding helpers ---
 
-// Dedup cache: keep track of recently forwarded messages to avoid duplicates
-const forwardedCache = new Set<string>();
-const FORWARD_CACHE_TTL = 60_000; // 1 minute
-
-function markForwarded(channelId: string, slackTs: string): boolean {
-  const key = `${channelId}:${slackTs}`;
-  if (forwardedCache.has(key)) return false;
-  forwardedCache.add(key);
-  setTimeout(() => forwardedCache.delete(key), FORWARD_CACHE_TTL);
-  return true;
-}
-
 export function isLinkOnly(text: string): boolean {
   const trimmed = text.trim();
   return /^https?:\/\/\S+$/.test(trimmed);
@@ -235,34 +244,43 @@ export function isMessageEmpty(text: string): boolean {
 }
 
 export function hasChannelPing(text: string): boolean {
-  return /<!here|<!channel>/.test(text);
+  return /<!(?:here|channel|everyone)>/.test(text);
+}
+
+export function hasRecentSubstantiveMessage(
+  current: Pick<StoreMessage, "slackTs" | "text" | "rawText">,
+  recent: Array<Pick<StoreMessage, "slackTs" | "text" | "rawText">>,
+): boolean {
+  return recent.some((m) => {
+    const text = m.rawText ?? m.text;
+    return (
+      m.slackTs !== current.slackTs &&
+      !isLinkOnly(text) &&
+      !isMessageEmpty(text) &&
+      !hasChannelPing(text)
+    );
+  });
 }
 
 export async function shouldForward(
   msg: StoreMessage,
   db: any,
 ): Promise<boolean> {
+  const policyText = msg.rawText ?? msg.text;
   // Always forward Slack permalink cross-posts
-  if (isSlackPermalink(msg.text)) return true;
+  if (isSlackPermalink(policyText)) return true;
   // Always forward empty messages (Slack forwarded messages often come as empty)
-  if (isMessageEmpty(msg.text)) return true;
-  if (isLinkOnly(msg.text)) {
+  if (isMessageEmpty(policyText)) return true;
+  if (isLinkOnly(policyText)) {
     console.log(
-      `shouldForward: skipping link-only message ${msg.slackTs}: ${msg.text.substring(0, 80)}`,
+      `shouldForward: skipping link-only message ${msg.slackTs}: ${policyText.substring(0, 80)}`,
     );
     return false;
   }
-  if (hasChannelPing(msg.text)) {
+  if (hasChannelPing(policyText)) {
     const since = new Date(Date.now() - 5 * 60 * 1000);
     const recent = await q.getRecentMessages(db, msg.channelId, since);
-    const hasSubstantive = recent.some(
-      (m) =>
-        m.slackTs !== msg.slackTs &&
-        !isLinkOnly(m.text) &&
-        !isMessageEmpty(m.text) &&
-        !hasChannelPing(m.text),
-    );
-    if (hasSubstantive) return false;
+    if (hasRecentSubstantiveMessage(msg, recent)) return false;
   }
   return true;
 }
@@ -378,6 +396,52 @@ export function canEditBotMessage(
   return lockdownUsers.includes(userId);
 }
 
+export function isMetadataValueSet(value: unknown): boolean {
+  return !(
+    value === undefined ||
+    value === null ||
+    value === "" ||
+    (Array.isArray(value) && value.length === 0)
+  );
+}
+
+export function hasProvidedMetadata(metadata: unknown): boolean {
+  if (metadata === undefined || metadata === null || metadata === "") {
+    return false;
+  }
+  const parsed =
+    typeof metadata === "string"
+      ? (() => {
+        try {
+          return JSON.parse(metadata);
+        } catch {
+          return null;
+        }
+      })()
+      : metadata;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return false;
+  }
+  return Object.values(parsed).some(isMetadataValueSet);
+}
+
+export function metadataRequirementSatisfied(
+  metadataRequired: boolean,
+  metadata: unknown,
+): boolean {
+  return !metadataRequired || hasProvidedMetadata(metadata);
+}
+
+export function findExistingForward(
+  actions: q.BotAction[],
+  subscriberChannelId: string,
+): q.BotAction | undefined {
+  return actions.find(
+    (action) =>
+      action.type === "pub" && action.botChannelId === subscriberChannelId,
+  );
+}
+
 export function upsertMetadataBlock(
   blocks: any[],
   metadataSection: string,
@@ -407,14 +471,7 @@ async function forwardToSubscribers(
   db: any,
   slack: WebClient,
 ) {
-  // Dedup: skip if we've already forwarded this message recently
-  if (!markForwarded(msg.channelId, msg.slackTs)) {
-    console.log(
-      `forwardToSubscribers: duplicate ${msg.channelId}:${msg.slackTs}, skipping`,
-    );
-    return;
-  }
-
+  await syncChannelName(db, slack, sourceChannel);
   const subs = await q.getSubscribersBySource(db, msg.channelId);
   if (subs.length === 0) {
     console.log(
@@ -422,7 +479,27 @@ async function forwardToSubscribers(
     );
     return;
   }
-  if (!(await shouldForward(msg, db))) {
+  const existingPubActions = await q.getBotActionsBySource(
+    db,
+    msg.channelId,
+    msg.slackTs,
+  );
+  const hasExistingForward = existingPubActions.some(
+    (action) => action.type === "pub",
+  );
+  if (
+    !metadataRequirementSatisfied(
+      sourceChannel.metadataRequired,
+      msg.metadata,
+    ) &&
+    !hasExistingForward
+  ) {
+    console.log(
+      `forwardToSubscribers: metadata required for ${msg.slackTs}, skipping`,
+    );
+    return;
+  }
+  if (!(await shouldForward(msg, db)) && !hasExistingForward) {
     console.log(
       `forwardToSubscribers: shouldForward returned false for ${msg.slackTs}`,
     );
@@ -466,12 +543,17 @@ async function forwardToSubscribers(
   }
 
   for (const sub of subs) {
+    const existingForward = findExistingForward(
+      existingPubActions,
+      sub.subscriberChannelId,
+    );
     const subCh = await q.getChannel(db, sub.subscriberChannelId);
     if (!subCh) {
-      console.error(
-        `Subscriber channel ${sub.subscriberChannelId} not found in DB`,
+      console.warn(
+        `Subscriber channel ${sub.subscriberChannelId} is not cached; attempting delivery by Slack channel ID`,
       );
-      continue;
+    } else {
+      await syncChannelName(db, slack, subCh);
     }
 
     // Get the link to forward from the message text or the computed permalink.
@@ -564,17 +646,20 @@ async function forwardToSubscribers(
     const parsedSchema = sourceChannel.metadataSchema
       ? JSON.parse(sourceChannel.metadataSchema)
       : null;
-    const metadataSection =
+    const metadataLines =
       parsedMetadata && parsedSchema
         ? Object.keys(parsedMetadata)
+          .filter((metaProp) => isMetadataValueSet(parsedMetadata[metaProp]))
           .map((metaProp) => {
             const field = parsedSchema.fields?.find(
               (e: any) => e.action_id === metaProp,
             );
             return `*${field?.label || metaProp}:* ${parsedMetadata[metaProp]}`;
           })
-          .join("\n") + "\n"
-        : "";
+        : [];
+    const metadataSection = metadataLines.length
+      ? metadataLines.join("\n") + "\n"
+      : "";
 
     console.log(
       "metadata:",
@@ -585,8 +670,7 @@ async function forwardToSubscribers(
 
     try {
       if (sourceChannel.linkMode) {
-        const res = await slack.chat.postMessage({
-          channel: sub.subscriberChannelId,
+        const payload: any = {
           username: postUsername,
           icon_url: postIcon,
           unfurl_links: false,
@@ -604,8 +688,19 @@ async function forwardToSubscribers(
               { type: "section", text: { type: "mrkdwn", text: footerText } },
             ]
             : undefined,
-        } as any);
-        if (res?.ts) {
+        };
+        const res = existingForward
+          ? await slack.chat.update({
+            channel: sub.subscriberChannelId,
+            ts: existingForward.botMessageTs,
+            text: payload.text,
+            ...(payload.blocks ? { blocks: payload.blocks } : {}),
+          } as any)
+          : await slack.chat.postMessage({
+            channel: sub.subscriberChannelId,
+            ...payload,
+          } as any);
+        if (!existingForward && res?.ts) {
           await q.addBotAction(db, {
             type: "pub",
             sourceChannelId: msg.channelId,
@@ -635,12 +730,12 @@ async function forwardToSubscribers(
       if (metadataSection) {
         blocks.push({
           type: "section",
+          block_id: "indigest_metadata",
           text: { type: "mrkdwn", text: metadataSection.trim() },
         });
       }
       blocks.push({ type: "context", elements: contextElements });
-      const res = await slack.chat.postMessage({
-        channel: sub.subscriberChannelId,
+      const payload: any = {
         username: postUsername,
         icon_url: postIcon,
         unfurl_links: false,
@@ -652,8 +747,19 @@ async function forwardToSubscribers(
             : `📰 *${displayName}* in #${sourceChannel.name}:\n${msg.text}`
         ).slice(0, 3000),
         blocks,
-      });
-      if (res?.ts) {
+      };
+      const res = existingForward
+        ? await slack.chat.update({
+          channel: sub.subscriberChannelId,
+          ts: existingForward.botMessageTs,
+          text: payload.text,
+          blocks: payload.blocks,
+        } as any)
+        : await slack.chat.postMessage({
+          channel: sub.subscriberChannelId,
+          ...payload,
+        });
+      if (!existingForward && res?.ts) {
         await q.addBotAction(db, {
           type: "pub",
           sourceChannelId: msg.channelId,
@@ -663,8 +769,11 @@ async function forwardToSubscribers(
           createdAt: "",
         });
       }
-    } catch (err) {
-      console.error(`Failed to forward to ${sub.subscriberChannelId}:`, err);
+    } catch (err: any) {
+      console.error(
+        `Failed to forward to ${sub.subscriberChannelId}:`,
+        err?.data || err?.message || err,
+      );
     }
   }
 }
@@ -1259,6 +1368,7 @@ app.get("/spec.json", (c) => {
             approvedPosters: { type: "array", items: { type: "string" } },
             trackReplies: { type: "boolean" },
             metadataSchema: { type: "string" },
+            metadataRequired: { type: "boolean" },
             createdAt: { type: "string" },
           },
         },
@@ -1347,6 +1457,7 @@ app.post("/events", async (c) => {
           accessPermUsers: ["*"],
           trackReplies: false,
           metadataSchema: "",
+          metadataRequired: false,
           createdAt: "",
         };
         await q.upsertChannel(db, ch);
@@ -1357,9 +1468,23 @@ app.post("/events", async (c) => {
         } catch { }
       }
 
+      if (ev.type === "channel_rename") {
+        const renamedChannelId = ev.channel?.id || ev.channel_id;
+        const renamedName = ev.channel?.name || ev.name;
+        if (renamedChannelId && renamedName) {
+          const renamedChannel = await q.getChannel(db, renamedChannelId);
+          if (renamedChannel) {
+            renamedChannel.name = renamedName;
+            await q.upsertChannel(db, renamedChannel);
+          }
+        }
+        return;
+      }
+
       if (ev.type === "message" && !ev.subtype && !ev.thread_ts) {
         const ch = await q.getChannel(db, ev.channel);
         if (!ch || !ch.enabled) return;
+        await syncChannelName(db, slack, ch);
 
         // Log full event for debugging empty forward messages
         if (!ev.text && !ev.subtype) {
@@ -1425,6 +1550,7 @@ app.post("/events", async (c) => {
               userId: ev.user,
               userName,
               text: resolveSlackMrkdwn(ev.text),
+              rawText: ev.text,
               timestamp: slackTsToTime(ev.ts).toISOString(),
               metadata,
             },
@@ -1583,7 +1709,10 @@ app.post("/interactions", async (c) => {
   // Metadata modal must open BEFORE responding — trigger_id expires in 3 seconds
   if (cb.type === "block_actions") {
     const action = cb.actions?.[0];
-    if (action?.action_id === "indigest_metadata") {
+    if (
+      action?.action_id === "indigest_metadata" ||
+      action?.action_id === "indigest_edit_metadata"
+    ) {
       const db = getDb(getDbUrl(env));
       const slack = new WebClient(env.SLACK_BOT_TOKEN);
       const channelId = cb.channel?.id;
@@ -1633,6 +1762,22 @@ app.post("/interactions", async (c) => {
         });
       }
       const { openMetadataModal } = await import("./api/modal");
+      let initialMetadata: Record<string, any> = {};
+      if (action.action_id === "indigest_edit_metadata") {
+        const storedMessage = await q.getMessageBySlackTs(
+          db,
+          channelId,
+          messageTs,
+        );
+        if (storedMessage?.metadata) {
+          try {
+            initialMetadata =
+              typeof storedMessage.metadata === "string"
+                ? JSON.parse(storedMessage.metadata)
+                : storedMessage.metadata;
+          } catch { }
+        }
+      }
       try {
         await openMetadataModal(
           slack,
@@ -1641,6 +1786,8 @@ app.post("/interactions", async (c) => {
           messageTs,
           schema,
           cb.container?.message_ts,
+          false,
+          initialMetadata,
         );
       } catch (err: any) {
         return c.json({
@@ -1669,17 +1816,38 @@ app.post("/interactions", async (c) => {
             .split(",")
             .map((s: string) => s.trim())
             .filter(Boolean);
-          const isManager =
-            lockdownUsers.includes(clickingUser) ||
-            (await isChannelManager(channelId, clickingUser, slack));
-          if (isManager) return;
+          const isLockdown = lockdownUsers.includes(clickingUser);
+          const isManager = isLockdown
+            ? false
+            : await isChannelManager(channelId, clickingUser, slack);
           const msgs = await q.getMessages(db, channelId, { limit: 100 });
           const originalMsg = msgs.find((m) => m.slackTs === messageTs);
-          if (originalMsg?.userId !== clickingUser) {
-            await slackResponse(
-              responseUrl,
-              "Only the original author or channel managers can edit metadata.",
-            );
+          let messageUser = originalMsg?.userId || "";
+          if (!messageUser) {
+            try {
+              const history = await slack.conversations.history({
+                channel: channelId,
+                latest: messageTs,
+                limit: 1,
+                inclusive: true,
+              });
+              messageUser = (history.messages?.[0] as any)?.user || "";
+            } catch { }
+          }
+          if (
+            !canApproveMessage({
+              approvedPosters: ch.approvedPosters,
+              clickingUser,
+              messageUser,
+              isManager,
+              isLockdown,
+            })
+          ) {
+            await slack.chat.postEphemeral({
+              channel: channelId,
+              user: clickingUser,
+              text: "❌ You don't have permission to edit metadata for this message.",
+            });
           }
         })(),
       );
@@ -1836,29 +2004,48 @@ app.post("/interactions", async (c) => {
                 field.action_id
                 ];
               if (!values) continue;
-              if (field.type === "multi_static_select")
-                m[field.action_id] =
-                  values.selected_options?.map((o: any) => o.value) || [];
-              else if (field.type === "datepicker")
-                m[field.action_id] = values.selected_date || "";
+              if (field.type === "multi_static_select") {
+                if (values.selected_options?.length) {
+                  m[field.action_id] = values.selected_options.map(
+                    (o: any) => o.value,
+                  );
+                }
+              } else if (field.type === "datepicker") {
+                if (values.selected_date) {
+                  m[field.action_id] = values.selected_date;
+                }
+              }
               else if (field.type === "file_input") {
                 const files = values.files || [];
-                m[field.action_id] = await Promise.all(
-                  files.map(async (f: any) => {
-                    if (!f.url_private) return { ...f, cdn_url: null };
-                    const cdnUrl = await uploadToCDN(
-                      f.url_private,
-                      env.SLACK_BOT_TOKEN,
-                      env.HACK_CLUB_CDN_KEY || "",
-                    );
-                    return { ...f, cdn_url: cdnUrl };
-                  }),
-                );
-              } else m[field.action_id] = values.value || "";
+                if (files.length) {
+                  m[field.action_id] = await Promise.all(
+                    files.map(async (f: any) => {
+                      if (!f.url_private) return { ...f, cdn_url: null };
+                      const cdnUrl = await uploadToCDN(
+                        f.url_private,
+                        env.SLACK_BOT_TOKEN,
+                        env.HACK_CLUB_CDN_KEY || "",
+                      );
+                      return { ...f, cdn_url: cdnUrl };
+                    }),
+                  );
+                }
+              } else if (values.value) {
+                m[field.action_id] = values.value;
+              }
             }
             return JSON.stringify(m);
           })()
           : "";
+
+        if (channel.metadataRequired && !hasProvidedMetadata(metadata)) {
+          await client.chat.postEphemeral({
+            channel: channelId,
+            user: clickingUser,
+            text: "❌ Metadata is required before this message can be forwarded.",
+          });
+          return;
+        }
 
         try {
           const history = approvalHistory || await client.conversations.history({
@@ -1969,6 +2156,7 @@ app.post("/interactions", async (c) => {
                 userId: msg.user || "",
                 userName,
                 text: resolveSlackMrkdwn(extractMessageText(msg)),
+                rawText: extractMessageText(msg),
                 timestamp: slackTsToTime(messageTs).toISOString(),
                 metadata,
               },
@@ -2004,6 +2192,14 @@ app.post("/interactions", async (c) => {
                         style: "danger" as const,
                         value: messageTs,
                       },
+                      ...(channel.metadataSchema
+                        ? [{
+                          type: "button",
+                          action_id: "indigest_edit_metadata",
+                          text: { type: "plain_text", text: "Edit metadata" },
+                          value: messageTs,
+                        }]
+                        : []),
                     ],
                   },
                 ],
@@ -2192,6 +2388,7 @@ app.post("/interactions", async (c) => {
                 userId,
                 userName,
                 text: resolveSlackMrkdwn(extractMessageText(msg)),
+                rawText: extractMessageText(msg),
                 timestamp: slackTsToTime(messageTs).toISOString(),
                 metadata,
               };
@@ -2359,6 +2556,15 @@ app.post("/interactions", async (c) => {
             return;
           }
 
+          if (ch.metadataRequired) {
+            await slack.chat.postEphemeral({
+              channel: channelId,
+              user: clickingUser,
+              text: "❌ This channel requires metadata before messages can be forwarded.",
+            });
+            return;
+          }
+
           await q.addBotAction(db, {
             type: "approve",
             sourceChannelId: channelId,
@@ -2379,10 +2585,10 @@ app.post("/interactions", async (c) => {
           await q.upsertMessage(db, {
             slackTs: messageTs,
             channelId,
-            userId: msg.user || "",
-            userName,
-            text: resolveSlackMrkdwn(extractMessageText(msg)),
-            timestamp: slackTsToTime(messageTs).toISOString(),
+                userId: msg.user || "",
+                userName,
+                text: resolveSlackMrkdwn(extractMessageText(msg)),
+                timestamp: slackTsToTime(messageTs).toISOString(),
             metadata: {},
           });
 
@@ -2392,6 +2598,7 @@ app.post("/interactions", async (c) => {
             userId: msg.user || "",
             userName,
             text: resolveSlackMrkdwn(extractMessageText(msg)),
+            rawText: extractMessageText(msg),
             timestamp: slackTsToTime(messageTs).toISOString(),
             metadata: {},
           };
@@ -2424,6 +2631,14 @@ app.post("/interactions", async (c) => {
                         style: "danger" as const,
                         value: messageTs,
                       },
+                      ...(ch.metadataSchema
+                        ? [{
+                          type: "button",
+                          action_id: "indigest_edit_metadata",
+                          text: { type: "plain_text", text: "Edit metadata" },
+                          value: messageTs,
+                        }]
+                        : []),
                     ],
                   },
                 ],
@@ -2660,6 +2875,7 @@ const slackSlashCommand = async (c: any) => {
           accessPermUsers: ["*"],
           trackReplies: false,
           metadataSchema: "",
+          metadataRequired: false,
           createdAt: "",
         };
         await q.upsertChannel(db, ch);
@@ -3071,6 +3287,7 @@ const slackSlashCommand = async (c: any) => {
                 console.error("view_submission error:", err.message);
               }
             }
+            if (ch.metadataRequired) msg += "\nMetadata: required";
             if (ch.approvedPosters.length > 0) {
               if (ch.approvedPosters.includes("poster")) {
                 const extraUsers = ch.approvedPosters.filter(
@@ -3123,7 +3340,7 @@ const slackSlashCommand = async (c: any) => {
         default: {
           if (!cmd) {
             await respond(
-              "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\`",
+              "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\` | \`schema required on|off\`",
             );
             return;
           }
@@ -3146,6 +3363,7 @@ const slackSlashCommand = async (c: any) => {
               await respond("Webhook cleared.");
               return;
             }
+
             const url = parts.slice(1).join(" ");
             if (!url.startsWith("http://") && !url.startsWith("https://")) {
               await respond("Invalid URL. Must start with http:// or https://");
@@ -3203,6 +3421,34 @@ const slackSlashCommand = async (c: any) => {
               return;
             }
 
+            if (subcmd === "required") {
+              if (!(await targetManager())) {
+                await respond(
+                  "Only the channel creator can change metadata requirements.",
+                );
+                return;
+              }
+              const wantsOff = [
+                "off",
+                "disable",
+                "disabled",
+                "0",
+                "false",
+              ].includes((arg || "").trim().toLowerCase());
+              ch.metadataRequired = !wantsOff;
+              await q.upsertChannel(db, ch);
+              await logCommand(
+                `schema required ${ch.metadataRequired ? "on" : "off"}`,
+                db,
+              );
+              await respond(
+                ch.metadataRequired
+                  ? "📝 Metadata is now required before messages can be forwarded."
+                  : "📝 Metadata is no longer required before forwarding.",
+              );
+              return;
+            }
+
             if (subcmd === "set") {
               if (!arg) {
                 await respond(
@@ -3231,7 +3477,7 @@ const slackSlashCommand = async (c: any) => {
             }
 
             await respond(
-              "Usage: \`/in schema set <json>\` | \`/in schema get\` | \`/in schema clear\`",
+              "Usage: \`/in schema set <json>\` | \`/in schema get\` | \`/in schema clear\` | \`/in schema required on|off\`",
             );
             return;
           }
@@ -3521,6 +3767,7 @@ app.get("/api/graph", async (c) => {
         name: ch.name,
         webhookUrl: ch.webhookUrl,
         metadataSchema: ch.metadataSchema,
+        metadataRequired: ch.metadataRequired,
         trackReplies: ch.trackReplies,
         approvedPosters: ch.approvedPosters,
         autoApproveUsers: ch.autoApproveUsers?.join(", ") || "",
@@ -3584,6 +3831,7 @@ app.get("/api/graph", async (c) => {
             name: subCh?.name,
             webhookUrl: subCh?.webhookUrl,
             metadataSchema: subCh?.metadataSchema,
+            metadataRequired: subCh?.metadataRequired,
             trackReplies: subCh?.trackReplies,
             approvedPosters: subCh?.approvedPosters,
             autoApproveUsers: subCh?.autoApproveUsers?.join(", ") || "",

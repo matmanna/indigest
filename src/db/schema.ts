@@ -21,6 +21,7 @@ export const channels = pgTable("channels", {
   approvedPosters: text("approved_posters").notNull().default(""),
   trackReplies: text("track_replies").notNull().default("0"),
   metadataSchema: text("metadata_schema").notNull().default(""),
+  metadataRequired: text("metadata_required").notNull().default("0"),
   createdAt: text("created_at").notNull().default(""),
   accessPermUsers: text("access_perm_users").notNull().default("*"),
 });
