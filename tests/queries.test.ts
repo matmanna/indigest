@@ -58,8 +58,11 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("database queries", () => {
     await q.addSubscription(db, subscriberId, sourceId);
     expect((await q.getSubscribersBySource(db, sourceId)).length).toBe(1);
     expect((await q.getSubscriptionsBySubscriber(db, subscriberId)).length).toBe(1);
-    await q.addBotAction(db, { type: "pub", sourceChannelId: sourceId, sourceMessageTs: "1.1", botChannelId: subscriberId, botMessageTs: "3.3", createdAt: "" });
-    expect((await q.getBotActionsBySource(db, sourceId, "1.1"))[0]?.type).toBe("pub");
+    await q.addBotAction(db, { type: "approve", sourceChannelId: sourceId, sourceMessageTs: "1.1", botChannelId: sourceId, botMessageTs: "2.2", userId: "U123", command: "indigest_yes", createdAt: "" });
+    const actions = await q.getBotActionsBySource(db, sourceId, "1.1");
+    expect(actions[0]?.type).toBe("approve");
+    expect(actions[0]?.userId).toBe("U123");
+    expect(actions[0]?.command).toBe("indigest_yes");
     const graph = await q.getGraphData(db);
     expect(graph.channels.some((c) => c.id === sourceId)).toBe(true);
     expect(graph.subscriberChannels.some((c) => c.id === subscriberId)).toBe(true);

@@ -45,6 +45,8 @@ export interface BotAction {
   sourceMessageTs: string;
   botChannelId: string;
   botMessageTs: string;
+  userId?: string;
+  command?: string;
   createdAt: string;
 }
 
@@ -384,6 +386,8 @@ export async function addBotAction(
     sourceMessageTs: action.sourceMessageTs,
     botChannelId: action.botChannelId,
     botMessageTs: action.botMessageTs,
+    userId: action.userId,
+    command: action.command,
     createdAt: new Date().toISOString(),
   });
 }
@@ -410,6 +414,8 @@ export async function getBotActionsBySource(
     sourceMessageTs: r.sourceMessageTs,
     botChannelId: r.botChannelId,
     botMessageTs: r.botMessageTs,
+    userId: r.userId || undefined,
+    command: r.command || undefined,
     createdAt: r.createdAt,
   }));
 }

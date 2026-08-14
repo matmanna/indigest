@@ -155,6 +155,39 @@ export async function openMetadataModal(
   });
 }
 
+export async function openBotMessageEditModal(
+  client: WebClient,
+  triggerId: string,
+  channelId: string,
+  messageTs: string,
+  initialText: string,
+) {
+  await client.views.open({
+    trigger_id: triggerId,
+    view: {
+      type: "modal",
+      callback_id: "edit_bot_message_modal",
+      title: { type: "plain_text", text: "Edit bot message", emoji: true },
+      submit: { type: "plain_text", text: "Save", emoji: true },
+      close: { type: "plain_text", text: "Cancel", emoji: true },
+      private_metadata: JSON.stringify({ channelId, messageTs }),
+      blocks: [
+        {
+          type: "input",
+          block_id: "edit_message",
+          label: { type: "plain_text", text: "Message text", emoji: true },
+          element: {
+            type: "plain_text_input",
+            action_id: "edit_message",
+            multiline: true,
+            initial_value: initialText.slice(0, 3000),
+          },
+        },
+      ],
+    } as any,
+  });
+}
+
 export function extractMetadataFromView(
   schema: MetadataSchema,
   state: Record<

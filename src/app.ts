@@ -157,8 +157,8 @@ async function postPermalinkReply(
       channel: channelId,
       thread_ts: messageTs,
       text: url,
-      unfurl_links: true,
-      unfurl_media: true,
+      unfurl_links: false,
+      unfurl_media: false,
     } as any);
   } catch { }
 }
@@ -371,6 +371,36 @@ export function canApproveMessage({
   return approvedPosters.includes(clickingUser);
 }
 
+export function canEditBotMessage(
+  userId: string,
+  lockdownUsers: string[],
+): boolean {
+  return lockdownUsers.includes(userId);
+}
+
+export function upsertMetadataBlock(
+  blocks: any[],
+  metadataSection: string,
+): any[] {
+  const withoutExistingMetadata = blocks.filter(
+    (block) => block?.block_id !== "indigest_metadata",
+  );
+  const metadataBlock = {
+    type: "section",
+    block_id: "indigest_metadata",
+    text: { type: "mrkdwn", text: metadataSection },
+  };
+  const contextIdx = withoutExistingMetadata.findIndex(
+    (block) => block?.type === "context",
+  );
+  if (contextIdx >= 0) {
+    withoutExistingMetadata.splice(contextIdx, 0, metadataBlock);
+  } else {
+    withoutExistingMetadata.push(metadataBlock);
+  }
+  return withoutExistingMetadata;
+}
+
 async function forwardToSubscribers(
   msg: StoreMessage,
   sourceChannel: StoreChannel,
@@ -444,7 +474,7 @@ async function forwardToSubscribers(
       continue;
     }
 
-    // Get the link to forward — from text if permalink, from metadata, or fallback to computed permalink
+    // Get the link to forward from the message text or the computed permalink.
     let forwardLink = "";
     let originalAuthorName = "";
     let originalAuthorAvatar = "";
@@ -453,16 +483,6 @@ async function forwardToSubscribers(
     // Check if text is a Slack permalink
     if (isSlackPermalink(msg.text)) {
       forwardLink = msg.text.trim();
-    }
-    // Check metadata for slack_permalink (set by auto-approve)
-    if (!forwardLink) {
-      try {
-        const meta =
-          typeof msg.metadata === "string"
-            ? JSON.parse(msg.metadata)
-            : msg.metadata;
-        if (meta?.slack_permalink) forwardLink = meta.slack_permalink;
-      } catch { }
     }
     if (!forwardLink) forwardLink = permalink;
 
@@ -535,11 +555,6 @@ async function forwardToSubscribers(
     }
     const contextElements = [{ type: "mrkdwn", text: footerText }];
 
-    // Suppress unfurl for direct messages and empty forwards (content shown inline), unless link mode
-    const suppressUnfurl = sourceChannel.linkMode
-      ? false
-      : !forwardLink || (Boolean(forwardLink) && isMessageEmpty(msg.text));
-
     const parsedMetadata =
       msg.metadata && msg.metadata != ""
         ? typeof msg.metadata === "string"
@@ -574,8 +589,8 @@ async function forwardToSubscribers(
           channel: sub.subscriberChannelId,
           username: postUsername,
           icon_url: postIcon,
-          unfurl_links: true,
-          unfurl_media: true,
+          unfurl_links: false,
+          unfurl_media: false,
           text: metadataSection
             ? metadataSection.trim() + "\n" + footerText
             : forwardLink || footerText,
@@ -583,6 +598,7 @@ async function forwardToSubscribers(
             ? [
               {
                 type: "section",
+                block_id: "indigest_metadata",
                 text: { type: "mrkdwn", text: metadataSection.trim() },
               },
               { type: "section", text: { type: "mrkdwn", text: footerText } },
@@ -627,8 +643,8 @@ async function forwardToSubscribers(
         channel: sub.subscriberChannelId,
         username: postUsername,
         icon_url: postIcon,
-        unfurl_links: suppressUnfurl ? false : undefined,
-        unfurl_media: suppressUnfurl ? false : undefined,
+        unfurl_links: false,
+        unfurl_media: false,
         text: (originalText
           ? `📰 *${postUsername}* in #${sourceChannel.name}:\n${originalText}`
           : forwardLink
@@ -1373,29 +1389,7 @@ app.post("/events", async (c) => {
             const u = await slack.users.info({ user: ev.user });
             userName = (u.user as any)?.name || ev.user;
           } catch { }
-          // Extract the original message permalink from the event
-          // Check text first, then attachments (Slack forwards), then fallback
-          let msgPermalink = "";
-          if (isSlackPermalink(ev.text)) {
-            msgPermalink = ev.text.trim();
-          } else if (ev.attachments && ev.attachments.length > 0) {
-            const att = ev.attachments[0];
-            msgPermalink =
-              att.from_url || att.original_url || att.permalink || "";
-            if (
-              !msgPermalink &&
-              att.text &&
-              att.text.includes("slack.com/archives/")
-            ) {
-              const match = att.text.match(
-                /https:\/\/\S+?slack\.com\/archives\/[A-Z0-9]+\/p\d+/,
-              );
-              if (match) msgPermalink = match[0];
-            }
-          }
-          const metadata = msgPermalink
-            ? { slack_permalink: msgPermalink }
-            : {};
+          const metadata = {};
 
           await q.upsertMessage(db, {
             slackTs: ev.ts,
@@ -1405,6 +1399,15 @@ app.post("/events", async (c) => {
             text: resolveSlackMrkdwn(ev.text),
             timestamp: slackTsToTime(ev.ts).toISOString(),
             metadata,
+          });
+          await q.addBotAction(db, {
+            type: "approve",
+            sourceChannelId: ev.channel,
+            sourceMessageTs: ev.ts,
+            botChannelId: ev.channel,
+            botMessageTs: "0",
+            command: "auto_approve",
+            createdAt: "",
           });
           await fireWebhook(ch, {
             slackTs: ev.ts,
@@ -1469,7 +1472,7 @@ app.post("/events", async (c) => {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `Expose this message to indigest via RSS and API?\n>${ev.text}\n`,
+              text: "Expose this message to indigest via RSS and API?",
             },
           };
           const actions = {
@@ -1684,6 +1687,70 @@ app.post("/interactions", async (c) => {
     }
   }
 
+  if (cb.type === "message_action" && cb.callback_id === "edit_bot_message") {
+    const channelId = cb.channel?.id;
+    const messageTs = cb.message?.ts;
+    const clickingUser = cb.user?.id || "";
+    const slack = new WebClient(env.SLACK_BOT_TOKEN);
+    const lockdownUsers = (env.LOCKDOWN_USERS || "")
+      .split(",")
+      .map((s: string) => s.trim())
+      .filter(Boolean);
+
+    if (!canEditBotMessage(clickingUser, lockdownUsers)) {
+      if (channelId) {
+        await slack.chat.postEphemeral({
+          channel: channelId,
+          user: clickingUser,
+          text: "❌ Only lockdown users can edit bot messages.",
+        });
+      }
+      return c.json({});
+    }
+
+    if (!channelId || !messageTs) return c.json({});
+    try {
+      const history = await slack.conversations.history({
+        channel: channelId,
+        latest: messageTs,
+        limit: 1,
+        inclusive: true,
+      });
+      const message = history.messages?.[0] as any;
+      const auth = await slack.auth.test();
+      const isOwnBotMessage =
+        message &&
+        (message.user === auth.user_id ||
+          (message.bot_id && message.bot_id === (auth as any).bot_id));
+      if (!isOwnBotMessage) {
+        await slack.chat.postEphemeral({
+          channel: channelId,
+          user: clickingUser,
+          text: "❌ This action can only edit messages posted by indigest.",
+        });
+        return c.json({});
+      }
+
+      const { openBotMessageEditModal } = await import("./api/modal");
+      await openBotMessageEditModal(
+        slack,
+        cb.trigger_id,
+        channelId,
+        messageTs,
+        message.text || "",
+      );
+    } catch (err: any) {
+      if (channelId) {
+        await slack.chat.postEphemeral({
+          channel: channelId,
+          user: clickingUser,
+          text: `❌ Could not open the edit form: ${err.message}`,
+        });
+      }
+    }
+    return c.json({});
+  }
+
   // Respond immediately for everything else to prevent Slack timeout
   c.res = new Response(JSON.stringify({}), {
     status: 200,
@@ -1818,6 +1885,16 @@ app.post("/interactions", async (c) => {
             timestamp: slackTsToTime(messageTs).toISOString(),
             metadata,
           });
+          await q.addBotAction(db, {
+            type: "approve",
+            sourceChannelId: channelId,
+            sourceMessageTs: messageTs,
+            botChannelId: channelId,
+            botMessageTs: botMessageTs || "0",
+            userId: clickingUser,
+            command: "metadata_submit",
+            createdAt: "",
+          });
 
           await fireWebhook(channel, {
             slackTs: messageTs,
@@ -1863,20 +1940,10 @@ app.post("/interactions", async (c) => {
                 });
                 const existingMsg = botMsg.messages?.[0] as any;
                 if (existingMsg?.blocks) {
-                  // Insert metadata section before the context block (last block)
-                  const blocks = [...existingMsg.blocks];
-                  const contextIdx = blocks.findIndex(
-                    (b: any) => b.type === "context",
+                  const blocks = upsertMetadataBlock(
+                    existingMsg.blocks,
+                    metadataSection,
                   );
-                  const metaBlock = {
-                    type: "section",
-                    text: { type: "mrkdwn", text: metadataSection },
-                  };
-                  if (contextIdx >= 0) {
-                    blocks.splice(contextIdx, 0, metaBlock);
-                  } else {
-                    blocks.push(metaBlock);
-                  }
                   await client.chat.update({
                     channel: action.botChannelId,
                     ts: action.botMessageTs,
@@ -1954,6 +2021,57 @@ app.post("/interactions", async (c) => {
         return;
       }
 
+      if (
+        cb.type === "view_submission" &&
+        cb.view?.callback_id === "edit_bot_message_modal"
+      ) {
+        const privateMeta = JSON.parse(cb.view.private_metadata || "{}");
+        const { channelId, messageTs } = privateMeta;
+        const clickingUser = cb.user?.id || "";
+        const lockdownUsers = (env.LOCKDOWN_USERS || "")
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter(Boolean);
+        if (!canEditBotMessage(clickingUser, lockdownUsers)) return;
+
+        const value =
+          cb.view.state?.values?.edit_message?.edit_message?.value || "";
+        if (!channelId || !messageTs || !value.trim()) return;
+
+        const history = await slack.conversations.history({
+          channel: channelId,
+          latest: messageTs,
+          limit: 1,
+          inclusive: true,
+        });
+        const message = history.messages?.[0] as any;
+        const auth = await slack.auth.test();
+        const isOwnBotMessage =
+          message &&
+          (message.user === auth.user_id ||
+            (message.bot_id && message.bot_id === (auth as any).bot_id));
+        if (!isOwnBotMessage) return;
+
+        const update: any = {
+          channel: channelId,
+          ts: messageTs,
+          text: value.trim(),
+        };
+        if (Array.isArray(message.blocks) && message.blocks.length > 0) {
+          const blocks = message.blocks.map((block: any) => ({ ...block }));
+          const firstTextBlock = blocks.find(
+            (block: any) =>
+              block.type === "section" && block.text && typeof block.text.text === "string",
+          );
+          if (firstTextBlock) {
+            firstTextBlock.text = { ...firstTextBlock.text, text: value.trim() };
+            update.blocks = blocks;
+          }
+        }
+        await slack.chat.update(update);
+        return;
+      }
+
       // Backfill shortcuts: manually pub a message
       if (cb.type === "message_action") {
         const channelId = cb.channel?.id;
@@ -2024,27 +2142,7 @@ app.post("/interactions", async (c) => {
                 userName = msg.username || msg.bot_id;
               }
 
-              let msgPermalink = "";
-              if (isSlackPermalink(msg.text)) {
-                msgPermalink = msg.text.trim();
-              } else if (msg.attachments && msg.attachments.length > 0) {
-                const att = msg.attachments[0];
-                msgPermalink =
-                  att.from_url || att.original_url || att.permalink || "";
-                if (
-                  !msgPermalink &&
-                  att.text &&
-                  att.text.includes("slack.com/archives/")
-                ) {
-                  const match = att.text.match(
-                    /https:\/\/\S+?slack\.com\/archives\/[A-Z0-9]+\/p\d+/,
-                  );
-                  if (match) msgPermalink = match[0];
-                }
-              }
-              const metadata = msgPermalink
-                ? { slack_permalink: msgPermalink }
-                : {};
+              const metadata = {};
 
               const ch = await q.getChannel(db, channelId);
 
@@ -2097,6 +2195,16 @@ app.post("/interactions", async (c) => {
                 timestamp: slackTsToTime(messageTs).toISOString(),
                 metadata,
               };
+              await q.addBotAction(db, {
+                type: "backfill",
+                sourceChannelId: channelId,
+                sourceMessageTs: messageTs,
+                botChannelId: channelId,
+                botMessageTs: "0",
+                userId: clickingUser,
+                command: apiOnly ? "backfill_api_only" : "backfill",
+                createdAt: "",
+              });
               if (ch) await fireWebhook(ch, savedMsg);
               if (ch && !apiOnly) await forwardToSubscribers(savedMsg, ch, db, slack);
             } catch (err: any) {
@@ -2251,6 +2359,17 @@ app.post("/interactions", async (c) => {
             return;
           }
 
+          await q.addBotAction(db, {
+            type: "approve",
+            sourceChannelId: channelId,
+            sourceMessageTs: messageTs,
+            botChannelId: channelId,
+            botMessageTs: botMessageTs || "0",
+            userId: clickingUser,
+            command: "indigest_yes",
+            createdAt: "",
+          });
+
           let userName = msg.user || "";
           try {
             const u = await slack.users.info({ user: msg.user });
@@ -2331,6 +2450,53 @@ app.post("/interactions", async (c) => {
           await slackResponse(responseUrl, `Error: ${err.message}`);
         }
       } else if (action.action_id === "indigest_no") {
+        const clickingUser = cb.user?.id || "";
+        const lockdownUsers = (env.LOCKDOWN_USERS || "")
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter(Boolean);
+        const isLockdown = lockdownUsers.includes(clickingUser);
+        const isManager = isLockdown
+          ? false
+          : await isChannelManager(channelId, clickingUser, slack);
+        let messageUser = (await q.getMessageBySlackTs(db, channelId, messageTs))?.userId || "";
+        if (!messageUser) {
+          try {
+            const history = await slack.conversations.history({
+              channel: channelId,
+              latest: messageTs,
+              limit: 1,
+              inclusive: true,
+            });
+            messageUser = (history.messages?.[0] as any)?.user || "";
+          } catch { }
+        }
+        if (!canApproveMessage({
+          approvedPosters: ch.approvedPosters,
+          clickingUser,
+          messageUser,
+          isManager,
+          isLockdown,
+        })) {
+          await slack.chat.postEphemeral({
+            channel: channelId,
+            user: clickingUser,
+            text: "❌ You don't have permission to decline this message.",
+          });
+          return;
+        }
+
+        await q.addBotAction(db, {
+          type: "decline",
+          sourceChannelId: channelId,
+          sourceMessageTs: messageTs,
+          botChannelId: channelId,
+          botMessageTs: botMessageTs || "0",
+          userId: clickingUser,
+          command: "indigest_no",
+          createdAt: "",
+        });
+
         // Remove the message from the DB if it was previously approved
         try {
           await q.deleteMessage(db, channelId, messageTs);

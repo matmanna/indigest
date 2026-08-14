@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canAccessFeed, canApproveMessage } from "../src/app";
+import { canAccessFeed, canApproveMessage, canEditBotMessage, upsertMetadataBlock } from "../src/app";
 import { canCreateApiKeyForChannel } from "../src/api/routers/apiKeys";
 
 const feed = (users: string[]) => ({ id: "C1", name: "", teamId: "", enabled: true, linkMode: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], accessPermUsers: users, trackReplies: false, metadataSchema: "", createdAt: "" });
@@ -78,5 +78,21 @@ describe("feed access invariants", () => {
       approvedPosters: [], clickingUser: "U999", messageUser: "U123",
       isManager: false, isLockdown: true,
     })).toBe(true);
+  });
+  test("metadata updates replace, rather than duplicate, the subscriber metadata block", () => {
+    const initial = [
+      { type: "section", text: { type: "mrkdwn", text: "message" } },
+      { type: "context", elements: [] },
+    ];
+    const once = upsertMetadataBlock(initial, "*Title:* one");
+    const twice = upsertMetadataBlock(once, "*Title:* two");
+    expect(twice.filter((block) => block.block_id === "indigest_metadata")).toHaveLength(1);
+    expect(twice.find((block) => block.block_id === "indigest_metadata")?.text.text).toBe("*Title:* two");
+    expect(twice[twice.length - 1]?.type).toBe("context");
+  });
+  test("only lockdown users can edit bot messages", () => {
+    expect(canEditBotMessage("U_LOCKDOWN", ["U_LOCKDOWN"])).toBe(true);
+    expect(canEditBotMessage("U_OTHER", ["U_LOCKDOWN"])).toBe(false);
+    expect(canEditBotMessage("U_OTHER", [])).toBe(false);
   });
 });
