@@ -168,3 +168,7 @@ npx wrangler deploy
 ## env vars
 
 see .env.example
+
+## horizons ai use
+
+while blindly vibecoding was avoided, post-initial planning and feature abstraction, ai agents (eg opencode) were used significantly especially for prototyping features, implementing tests, performing database tasks.
