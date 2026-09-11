@@ -18,6 +18,7 @@ export const channels = pgTable("channels", {
   linkMode: text("link_mode").notNull().default("0"),
   webhookUrl: text("webhook_url").notNull().default(""),
   autoApproveUsers: text("auto_approve_users").notNull().default(""),
+  manualUsers: text("manual_users").notNull().default(""),
   approvedPosters: text("approved_posters").notNull().default(""),
   trackReplies: text("track_replies").notNull().default("0"),
   metadataSchema: text("metadata_schema").notNull().default(""),

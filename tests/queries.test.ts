@@ -10,7 +10,7 @@ const suffix = `test-${Date.now()}`;
 const sourceId = `C-${suffix}`;
 const subscriberId = `C-sub-${suffix}`;
 
-const channel = (id: string, enabled = true): q.Channel => ({ id, name: id, teamId: "T1", enabled, linkMode: false, webhookUrl: "", autoApproveUsers: ["a", "b"], approvedPosters: [], accessPermUsers: ["*"], trackReplies: false, metadataSchema: "", metadataRequired: false, properties: "", createdAt: "" });
+const channel = (id: string, enabled = true): q.Channel => ({ id, name: id, teamId: "T1", enabled, linkMode: false, webhookUrl: "", autoApproveUsers: ["a", "b"], manualUsers: [], approvedPosters: [], accessPermUsers: ["*"], trackReplies: false, metadataSchema: "", metadataRequired: false, properties: "", createdAt: "" });
 const message = (slackTs: string, text: string, extra: Partial<q.Message> = {}): q.Message => ({ slackTs, channelId: sourceId, userId: "U1", userName: "Ada", text, timestamp: `2026-01-01T00:00:${slackTs.split(".")[1] || "00"}.000Z`, metadata: { ok: true }, ...extra });
 
 beforeAll(async () => {

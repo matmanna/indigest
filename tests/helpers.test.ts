@@ -9,6 +9,7 @@ import {
   isMessageEmpty,
   isSlackPermalink,
   metadataRequirementSatisfied,
+  resolvePublishDisposition,
   resolveSubProfileValue,
   shouldForward,
 } from "../src/app";
@@ -22,7 +23,7 @@ import {
 
 const channel = (accessPermUsers = ["*"]) => ({
   id: "C1", name: "feed", teamId: "T1", enabled: true, linkMode: false,
-  webhookUrl: "", autoApproveUsers: [], approvedPosters: [], accessPermUsers,
+  webhookUrl: "", autoApproveUsers: [], manualUsers: [], approvedPosters: [], accessPermUsers,
   trackReplies: false, metadataSchema: "", metadataRequired: false, properties: "", createdAt: "",
 });
 const msg = (text: string) => ({ slackTs: "1.1", channelId: "C1", userId: "U1", userName: "u", text, timestamp: new Date().toISOString(), metadata: {} });
@@ -144,6 +145,50 @@ describe("pure helpers", () => {
       expect(resolveSubProfileValue("[missing]", props)).toBeNull();
       expect(resolveSubProfileValue("[missing]", null)).toBeNull();
       expect(resolveSubProfileValue("[title]", null)).toBeNull();
+    });
+  });
+  describe("resolvePublishDisposition", () => {
+    const ch = (auto = [], manual = []) => ({ autoApproveUsers: auto, manualUsers: manual });
+    test("prompts everyone when no whitelist is configured", () => {
+      expect(resolvePublishDisposition(ch(), "U1")).toBe("prompt");
+      expect(resolvePublishDisposition(ch(["U2"]), "U1")).toBe("drop");
+      expect(resolvePublishDisposition(ch([], ["U2"]), "U1")).toBe("drop");
+    });
+    test("auto-approves a whitelisted user and drops everyone else", () => {
+      expect(resolvePublishDisposition(ch(["U1"]), "U1")).toBe("auto");
+      expect(resolvePublishDisposition(ch(["U1"]), "U2")).toBe("drop");
+      expect(resolvePublishDisposition(ch(["U1", "U2"]), "U2")).toBe("auto");
+      expect(resolvePublishDisposition(ch(["U1", "U2"]), "U3")).toBe("drop");
+    });
+    test("auto-approves all users when the list contains *", () => {
+      expect(resolvePublishDisposition(ch(["*"]), "U1")).toBe("auto");
+      expect(resolvePublishDisposition(ch(["*"]), "U999")).toBe("auto");
+      expect(resolvePublishDisposition(ch(["*", "U1"]), "U2")).toBe("auto");
+    });
+    test("prompts a manual-whitelisted user and drops everyone else", () => {
+      expect(resolvePublishDisposition(ch([], ["U1"]), "U1")).toBe("prompt");
+      expect(resolvePublishDisposition(ch([], ["U1"]), "U2")).toBe("drop");
+    });
+    test("keeps auto and manual whitelists independent", () => {
+      const both = ch(["UA"], ["UM"]);
+      expect(resolvePublishDisposition(both, "UA")).toBe("auto");
+      expect(resolvePublishDisposition(both, "UM")).toBe("prompt");
+      expect(resolvePublishDisposition(both, "UX")).toBe("drop");
+    });
+    test("treats a user on both lists as auto", () => {
+      expect(resolvePublishDisposition(ch(["U1"], ["U1"]), "U1")).toBe("auto");
+    });
+    test("ignores empty strings in persisted lists", () => {
+      expect(resolvePublishDisposition(ch([""]), "U1")).toBe("prompt");
+      expect(resolvePublishDisposition(ch(["U1", ""]), "U2")).toBe("drop");
+      expect(resolvePublishDisposition(ch([""], [""]), "")).toBe("prompt");
+    });
+    test("a user may not be dropped when a whitelist is present", () => {
+      for (const userId of ["U1", "U2", "U3"]) {
+        const result = resolvePublishDisposition(ch(["U1"], ["U2"]), userId);
+        expect(["auto", "prompt", "drop"]).toContain(result);
+        if (userId === "U3") expect(result).toBe("drop");
+      }
     });
   });
 });

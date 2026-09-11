@@ -571,6 +571,27 @@ export function canApproveMessage({
   return approvedPosters.includes(clickingUser);
 }
 
+export type PublishDisposition = "auto" | "prompt" | "drop";
+
+/**
+ * Decide how a message from `userId` should be handled for a channel with
+ * publish whitelists. If either whitelist (auto or manual) is non-empty, only
+ * users on a whitelist are published: auto users are auto-published, manual
+ * users get a Yep!/No prompt, and everyone else is dropped. With no whitelist,
+ * everyone is prompted.
+ */
+export function resolvePublishDisposition(
+  ch: { autoApproveUsers: string[]; manualUsers: string[] },
+  userId: string,
+): PublishDisposition {
+  const auto = ch.autoApproveUsers.filter(Boolean);
+  if (auto.includes("*") || auto.includes(userId)) return "auto";
+  const manual = ch.manualUsers.filter(Boolean);
+  if (manual.includes(userId)) return "prompt";
+  const anyWhitelist = auto.length > 0 || manual.length > 0;
+  return anyWhitelist ? "drop" : "prompt";
+}
+
 export function canEditBotMessage(
   userId: string,
   lockdownUsers: string[],
@@ -1600,6 +1621,7 @@ app.get("/spec.json", (c) => {
             linkMode: { type: "boolean" },
             webhookUrl: { type: "string" },
             autoApproveUsers: { type: "array", items: { type: "string" } },
+            manualUsers: { type: "array", items: { type: "string" } },
             approvedPosters: { type: "array", items: { type: "string" } },
             trackReplies: { type: "boolean" },
             metadataSchema: { type: "string" },
@@ -1705,6 +1727,7 @@ app.post("/events", async (c) => {
           linkMode: false,
           webhookUrl: "",
           autoApproveUsers: [],
+          manualUsers: [],
           approvedPosters: [],
           accessPermUsers: ["*"],
           trackReplies: false,
@@ -1755,11 +1778,9 @@ app.post("/events", async (c) => {
           );
         }
 
-        const isAutoApproved =
-          ch.autoApproveUsers.includes("*") ||
-          ch.autoApproveUsers.includes(ev.user);
+        const disposition = resolvePublishDisposition(ch, ev.user);
 
-        if (isAutoApproved) {
+        if (disposition === "auto") {
           console.log(`Auto-approving message from ${ev.user} in #${ch.name}`);
           let userName = ev.user;
           try {
@@ -1851,7 +1872,7 @@ app.post("/events", async (c) => {
               } catch { }
             }
           }
-        } else {
+        } else if (disposition === "prompt") {
           // Non-auto-approve: prompt for manual approval
           const section = {
             type: "section",
@@ -3275,6 +3296,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           linkMode: false,
           webhookUrl: "",
           autoApproveUsers: [],
+          manualUsers: [],
           approvedPosters: [],
           accessPermUsers: ["*"],
           trackReplies: false,
@@ -3309,8 +3331,78 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
         return;
       }
 
+      const doUnpub = async (logTag: string) => {
+        if (!(await targetManager())) {
+          await respond("Only the channel creator can unpub indigest.");
+          return;
+        }
+        ch.enabled = false;
+        await q.upsertChannel(db, ch);
+        await logCommand(logTag, db);
+        const label =
+          targetChannelId === sourceChannelId ? "" : ` in #${ch.name}`;
+        await respond(`indigest unpub'd${label}.`);
+      };
+
+      const doUnsub = async (unsubArg: string) => {
+        const unsubChannelMatch = unsubArg.match(
+          /^(<#(\w+)(\|[^>]*)?>|#(\S+))\s*$/,
+        );
+        if (!unsubChannelMatch) {
+          await respond(
+            "Usage: \`/in unsub #channel\` | \`/in sub off #channel\`",
+          );
+          return;
+        }
+        const unsubIdFromRef = unsubChannelMatch[2];
+        const unsubNameFromRef = unsubChannelMatch[4];
+        let sourceId: string;
+        let sourceName: string;
+        if (unsubIdFromRef) {
+          sourceId = unsubIdFromRef;
+        } else {
+          try {
+            const list = await slack.conversations.list({
+              types: "public_channel,private_channel",
+              limit: 1000,
+            });
+            const channels = (list.channels as any[]) || [];
+            const found = channels.find(
+              (c: any) => c.name === unsubNameFromRef,
+            );
+            if (!found) {
+              await respond(`Channel #${unsubNameFromRef} not found.`);
+              return;
+            }
+            sourceId = found.id;
+          } catch {
+            await respond("Couldn't look up channels.");
+            return;
+          }
+        }
+        const sourceCh = await q.getChannel(db, sourceId);
+        sourceName = sourceCh?.name || unsubNameFromRef || sourceId;
+        const existingSubs = await q.getSubscriptionsBySubscriber(
+          db,
+          sourceChannelId,
+        );
+        if (!existingSubs.some((s) => s.sourceChannelId === sourceId)) {
+          await respond(`Not subscribed to #${sourceName}.`);
+          return;
+        }
+        await q.removeSubscription(db, sourceChannelId, sourceId);
+        cachedGraph = null;
+        await logCommand(`unsub #${sourceName}`, db);
+        await respond(`📰 Unsubscribed from #${sourceName}.`);
+      };
+
       switch (cmd) {
         case "pub": {
+          if (subcmd === "off") {
+            await doUnpub("pub off");
+            return;
+          }
+
           if (subcmd === "auto") {
             const target = arg.replace(/^<@(\w+)(\|[^>]*)?>$/, "$1").trim();
 
@@ -3318,6 +3410,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
 
             if (!target) {
               ch.autoApproveUsers = ["*"];
+              ch.manualUsers = [];
               await q.upsertChannel(db, ch);
               await logCommand("pub auto *", db);
               await respond(
@@ -3349,10 +3442,11 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
               return;
             }
             ch.autoApproveUsers.push(target);
+            ch.manualUsers = ch.manualUsers.filter((id) => id !== target);
             await q.upsertChannel(db, ch);
             await logCommand(`pub auto <@${target}>`, db);
             await respond(
-              `📰 Auto-approve enabled for <@${target}> in #${ch.name}.\nRSS: ${baseUrl}/feed/${targetChannelId}\nJSON: ${baseUrl}/feed/${targetChannelId}.json`,
+              `📰 Auto-approve enabled for <@${target}> in #${ch.name}. Only their messages will be published.\nRSS: ${baseUrl}/feed/${targetChannelId}\nJSON: ${baseUrl}/feed/${targetChannelId}.json`,
             );
             return;
           }
@@ -3404,20 +3498,19 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
               ch.autoApproveUsers = ch.autoApproveUsers.filter(
                 (id) => id !== target,
               );
+              if (!ch.manualUsers.includes(target)) {
+                ch.manualUsers.push(target);
+              }
               await q.upsertChannel(db, ch);
               await logCommand(`pub manual <@${target}>`, db);
-              if (wasAuto) {
-                await respond(
-                  `📰 <@${target}> moved to manual mode in ${label}. Their messages will get a Yep!/No prompt.`,
-                );
-              } else {
-                await respond(
-                  `📰 <@${target}> was already on manual mode in ${label}. Their messages will get a Yep!/No prompt.`,
-                );
-              }
+              const verb = wasAuto ? "moved to" : "added to";
+              await respond(
+                `📰 <@${target}> ${verb} manual mode in ${label}. Their messages will get a Yep!/No prompt; other users' messages won't be published.`,
+              );
               return;
             }
             ch.autoApproveUsers = [];
+            ch.manualUsers = [];
             await q.upsertChannel(db, ch);
             await logCommand("pub manual", db);
             await respond(
@@ -3453,7 +3546,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
 
           if (subcmd) {
             await respond(
-              "Usage: \`/in pub\` | \`/in pub #channel\` | \`/in pub auto @user\` | \`/in pub manual\` | \`/in pub link\` | \`/in pub replies\`",
+              "Usage: \`/in pub\` | \`/in pub #channel\` | \`/in pub auto @user\` | \`/in pub manual [@user]\` | \`/in pub link\` | \`/in pub replies\` | \`/in pub off\`",
             );
             return;
           }
@@ -3463,6 +3556,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           }
           ch.enabled = true;
           ch.autoApproveUsers = [];
+          ch.manualUsers = [];
           await q.upsertChannel(db, ch);
           await logCommand("pub", db);
           const label =
@@ -3502,20 +3596,11 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
 
           if (subcmd) {
             await respond(
-              "Usage: \`/in unpub\` | \`/in unpub #channel\` | \`/in unpub auto [@user]\`",
+              "Usage: \`/in unpub\` | \`/in unpub #channel\` | \`/in unpub auto [@user]\` | \`/in pub off\`",
             );
             return;
           }
-          if (!(await targetManager())) {
-            await respond("Only the channel creator can unpub indigest.");
-            return;
-          }
-          ch.enabled = false;
-          await q.upsertChannel(db, ch);
-          await logCommand("unpub", db);
-          const label =
-            targetChannelId === sourceChannelId ? "" : ` in #${ch.name}`;
-          await respond(`indigest unpub'd${label}.`);
+          await doUnpub("unpub");
           return;
         }
 
@@ -3524,6 +3609,11 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
             await respond(
               "Only the channel creator or workspace admin can subscribe channels.",
             );
+            return;
+          }
+
+          if (subcmd === "off") {
+            await doUnsub(arg);
             return;
           }
 
@@ -3539,7 +3629,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           const subArg = [subcmd, arg].filter(Boolean).join(" ");
           if (!subArg) {
             await respond(
-              "Usage: \`/indigest sub #channel\` — subscribe this channel to receive messages from #channel.",
+              "Usage: \`/in sub #channel\` | \`/in sub off #channel\` — subscribe/unsubscribe this channel to/from #channel.",
             );
             return;
           }
@@ -3549,7 +3639,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           );
           if (!subChannelMatch) {
             await respond(
-              "Usage: \`/indigest sub #channel\` — subscribe this channel to receive messages from #channel.",
+              "Usage: \`/in sub #channel\` | \`/in sub off #channel\` — subscribe/unsubscribe this channel to/from #channel.",
             );
             return;
           }
@@ -3621,66 +3711,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
             return;
           }
 
-          const unsubArg = [subcmd, arg].filter(Boolean).join(" ");
-          if (!unsubArg) {
-            await respond(
-              "Usage: \`/indigest unsub #channel\` — unsubscribe this channel from #channel.",
-            );
-            return;
-          }
-
-          const unsubChannelMatch = unsubArg.match(
-            /^(<#(\w+)(\|[^>]*)?>|#(\S+))\s*$/,
-          );
-          if (!unsubChannelMatch) {
-            await respond(
-              "Usage: \`/indigest unsub #channel\` — unsubscribe this channel from #channel.",
-            );
-            return;
-          }
-
-          const unsubIdFromRef = unsubChannelMatch[2];
-          const unsubNameFromRef = unsubChannelMatch[4];
-          let sourceId: string;
-          let sourceName: string;
-
-          if (unsubIdFromRef) {
-            sourceId = unsubIdFromRef;
-          } else {
-            try {
-              const list = await slack.conversations.list({
-                types: "public_channel,private_channel",
-                limit: 1000,
-              });
-              const channels = (list.channels as any[]) || [];
-              const found = channels.find(
-                (c: any) => c.name === unsubNameFromRef,
-              );
-              if (!found) {
-                await respond(`Channel #${unsubNameFromRef} not found.`);
-                return;
-              }
-              sourceId = found.id;
-            } catch {
-              await respond("Couldn't look up channels.");
-              return;
-            }
-          }
-
-          const sourceCh = await q.getChannel(db, sourceId);
-          sourceName = sourceCh?.name || unsubNameFromRef || sourceId;
-
-          const existingSubs =
-            await q.getSubscriptionsBySubscriber(db, sourceChannelId);
-          if (!existingSubs.some((s) => s.sourceChannelId === sourceId)) {
-            await respond(`Not subscribed to #${sourceName}.`);
-            return;
-          }
-
-          await q.removeSubscription(db, sourceChannelId, sourceId);
-          cachedGraph = null;
-          await logCommand(`unsub #${sourceName}`, db);
-          await respond(`📰 Unsubscribed from #${sourceName}.`);
+          await doUnsub([subcmd, arg].filter(Boolean).join(" "));
           return;
         }
 
@@ -3711,6 +3742,9 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
                 ? "all users"
                 : ch.autoApproveUsers.map((id) => `<@${id}>`).join(", ");
               msg += `\nAuto-approve: ${autoLabel}`;
+            }
+            if (ch.manualUsers.length > 0) {
+              msg += `\nManual-only: ${ch.manualUsers.map((id) => `<@${id}>`).join(", ")}`;
             }
             if (ch.metadataSchema) {
               try {
@@ -3773,7 +3807,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
         default: {
           if (!cmd) {
             await respond(
-              "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`sub pfp #source <value>\` | \`sub name #source <value>\` — set per-source profile overrides\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\` | \`schema required on|off\`\n• \`prop set <json>\` | \`prop get\` | \`prop clear\` — channel properties",
+              "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest (alias: \`pub off\`)\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual [@user]\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`sub off #channel\` — unsubscribe from another channel's feed\n• \`sub pfp #source <value>\` | \`sub name #source <value>\` — set per-source profile overrides\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\` | \`schema required on|off\`\n• \`prop set <json>\` | \`prop get\` | \`prop clear\` — channel properties",
             );
             return;
           }
@@ -4050,7 +4084,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           }
 
           await respond(
-            "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`sub pfp #source <value>\` | \`sub name #source <value>\` — set per-source profile overrides\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\`\n• \`prop set <json>\` | \`prop get\` | \`prop clear\` — channel properties",
+            "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest (alias: \`pub off\`)\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual [@user]\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`sub off #channel\` — unsubscribe from another channel's feed\n• \`sub pfp #source <value>\` | \`sub name #source <value>\` — set per-source profile overrides\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\`\n• \`prop set <json>\` | \`prop get\` | \`prop clear\` — channel properties",
           );
         }
       }

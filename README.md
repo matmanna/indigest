@@ -48,12 +48,13 @@ _tldr: if you forget what to do, run `/in`_
 | `/in`                    | Show help message with all commands                                  |
 | `/in pub`                | Enable manual mode (buttons on every message)                        |
 | `/in pub auto`           | Enable auto-approve for **all users**                                |
-| `/in pub auto @user`     | Enable auto-approve for a specific user                              |
+| `/in pub auto @user`     | Auto-publish only that user's messages                               |
 | `/in pub manual`         | Explicitly enable manual mode (clears auto-approve)                  |
-| `/in pub manual @user`   | Move a user to manual mode (their messages get a Yep!/No prompt)     |
-| `/in unpub`              | Disable indigest for a channel                                       |
+| `/in pub manual @user`   | Only that user's messages get a Yep!/No prompt; others aren't posted |
+| `/in unpub`              | Disable indigest for a channel (alias: `/in pub off`)                |
 | `/in unpub auto [@user]` | Remove auto-approve for a user (or all users)                        |
 | `/in sub #channel`       | Subscribe this channel to receive forwarded messages from `#channel` |
+| `/in sub off #channel`   | Unsubscribe this channel from `#channel` (alias for `/in unsub`)     |
 | `/in unsub #channel`     | Unsubscribe this channel from `#channel`                             |
 | `/in status`             | Show pub status, feed URLs, subscriptions, and permissions           |
 | `/in webhook <url>`      | Set webhook URL for approved messages                                |

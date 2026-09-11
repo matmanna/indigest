@@ -12,6 +12,7 @@ export interface Channel {
   linkMode: boolean;
   webhookUrl: string;
   autoApproveUsers: string[];
+  manualUsers: string[];
   approvedPosters: string[];
   accessPermUsers: string[];
   trackReplies: boolean;
@@ -104,6 +105,7 @@ function rowToChannel(r: any): Channel {
     autoApproveUsers: r.autoApproveUsers
       ? r.autoApproveUsers.split(",").filter(Boolean)
       : [],
+    manualUsers: r.manualUsers ? r.manualUsers.split(",").filter(Boolean) : [],
     approvedPosters: r.approvedPosters
       ? r.approvedPosters.split(",").filter(Boolean)
       : [],
@@ -179,6 +181,7 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
       linkMode: ch.linkMode ? "1" : "0",
       webhookUrl: ch.webhookUrl,
       autoApproveUsers: ch.autoApproveUsers.join(","),
+      manualUsers: ch.manualUsers.join(","),
       approvedPosters: ch.approvedPosters.join(","),
       accessPermUsers: ch.accessPermUsers.join(","),
       trackReplies: ch.trackReplies ? "1" : "0",
@@ -196,6 +199,7 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
         linkMode: ch.linkMode ? "1" : "0",
         webhookUrl: ch.webhookUrl,
         autoApproveUsers: ch.autoApproveUsers.join(","),
+        manualUsers: ch.manualUsers.join(","),
         approvedPosters: ch.approvedPosters.join(","),
         accessPermUsers: ch.accessPermUsers.join(","),
         trackReplies: ch.trackReplies ? "1" : "0",

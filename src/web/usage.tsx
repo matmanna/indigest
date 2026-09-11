@@ -16,7 +16,7 @@ Slash commands for managing indigest channels. Run these in Slack like:
 - \`/in pub\` — Enable indigest for this channel. New messages get a Yep!/No prompt.
 - \`/in pub #channel\` — Enable for a specific channel.
 - \`/in pub link\` — Toggle link mode: approved messages get an unfurlable permalink reply, and subscriber channels get a “Forwarded from …” footer with an unfurlable link. (\`/in pub link off\` disables.)
-- \`/in unpub\` — Disable indigest for this channel.
+- \`/in unpub\` — Disable indigest for this channel. (Alias: \`/in pub off\`.)
 - \`/in unpub #channel\` — Disable for a specific channel.
 
 ## Auto-Approve
@@ -30,6 +30,7 @@ Slash commands for managing indigest channels. Run these in Slack like:
 ## Manual Mode
 
 - \`/in pub manual\` — Every message gets a manual Yep!/No prompt.
+- \`/in pub manual @user\` — Only that user's messages get a Yep!/No prompt; other users' posts are not published.
 
 ## Thread Replies
 
@@ -38,7 +39,7 @@ Slash commands for managing indigest channels. Run these in Slack like:
 ## Subscriptions
 
 - \`/in sub #channel\` — Subscribe this channel to receive messages from #channel.
-- \`/in unsub #channel\` — Unsubscribe from a channel.
+- \`/in sub off #channel\` — Unsubscribe from a channel. (Alias for \`/in unsub #channel\`.)
 
 ## Webhooks
 
