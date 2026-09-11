@@ -1,5 +1,14 @@
-import { describe, expect, test } from "bun:test";
-import { extractMessageText, resolveSlackMrkdwn } from "../src/app";
+import { describe, expect, test } from "vitest";
+import {
+  extractMessageText,
+  extractForwarderComment,
+  extractOriginalAuthor,
+  extractOriginalTimestamp,
+  isBlankForwardMessage,
+  resolveMessageTimestamp,
+  resolveStoredAuthors,
+  resolveSlackMrkdwn,
+} from "../src/app";
 
 describe("Slack text sanitization", () => {
   test("removes broadcast mentions", () => {
@@ -19,6 +28,99 @@ describe("Slack text sanitization", () => {
       { type: "section", text: { type: "mrkdwn", text: "section" } },
       { type: "context", elements: [{ type: "mrkdwn", text: "context" }] },
     ], text: "fallback" })).toBe("section\ncontext");
+  });
+
+  test("extracts forwarded content when the Slack text field is blank", () => {
+    expect(extractMessageText({
+      text: "",
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: "forwarded content" } }],
+    })).toBe("forwarded content");
+    expect(extractMessageText({
+      text: "",
+      attachments: [{ title: "Forwarded title", text: "Forwarded body" }],
+    })).toBe("Forwarded title\nForwarded body");
+    expect(extractMessageText({
+      text: "",
+      blocks: [{
+        type: "rich_text",
+        elements: [{
+          type: "rich_text_section",
+          elements: [
+            { type: "text", text: "Rich text content" },
+            { type: "emoji", name: "eyes" },
+          ],
+        }],
+      }],
+    })).toBe("Rich text content\n:eyes:");
+  });
+
+  test("attributes shared content to the original author", () => {
+    expect(extractOriginalAuthor({
+      user: "U_FORWARDER",
+      message: { user: "U_ORIGINAL", username: "original-author" },
+    })).toEqual({ userId: "U_ORIGINAL", userName: "original-author" });
+    expect(extractOriginalAuthor({
+      user: "U_FORWARDER",
+      attachments: [{ author_id: "U_ORIGINAL", author_name: "original-author" }],
+    })).toEqual({ userId: "U_ORIGINAL", userName: "original-author" });
+  });
+
+  test("extracts the original timestamp from shared messages", () => {
+    expect(extractOriginalTimestamp({
+      ts: "200.2",
+      message: { ts: "100.1" },
+    })).toBe("100.1");
+    expect(extractOriginalTimestamp({
+      attachments: [{ timestamp: "100.1" }],
+    })).toBe("100.1");
+    expect(resolveMessageTimestamp({
+      text: "",
+      message: { ts: "100.1" },
+    }, "200.2")).toBe(new Date(100000).toISOString());
+    expect(resolveMessageTimestamp({
+      text: "forwarded content",
+      message: { ts: "100.1" },
+    }, "200.2")).toBe(new Date(200000).toISOString());
+    expect(resolveMessageTimestamp({
+      text: "",
+      message: { user: "U_ORIGINAL" },
+    }, "200.2", "1999-01-01T00:00:00.000Z")).toBe("1999-01-01T00:00:00.000Z");
+    expect(resolveStoredAuthors({
+      text: "",
+      user: "U_FORWARDER",
+      message: { ts: "100.1", user: "U_ORIGINAL", username: "Original" },
+    }, "U_FORWARDER", "Forwarder")).toEqual({
+      userId: "U_ORIGINAL",
+      userName: "Original",
+    });
+    expect(resolveStoredAuthors({
+      text: "forwarded content",
+      user: "U_FORWARDER",
+      message: { ts: "100.1", user: "U_ORIGINAL", username: "Original" },
+    }, "U_FORWARDER", "Forwarder")).toEqual({
+      userId: "U_FORWARDER,U_ORIGINAL",
+      userName: "Forwarder,Original",
+    });
+    expect(resolveStoredAuthors({
+      text: "",
+      user: "U_FORWARDER",
+      message: { user: "U_ORIGINAL", username: "Original" },
+    }, "U_FORWARDER", "Forwarder")).toEqual({
+      userId: "U_ORIGINAL",
+      userName: "Original",
+    });
+    expect(extractForwarderComment({
+      text: "",
+      message: { text: "original message", user: "U_ORIGINAL" },
+    })).toBe("");
+    expect(isBlankForwardMessage({
+      text: "",
+      message: { text: "original message", user: "U_ORIGINAL", ts: "100.1" },
+    })).toBe(true);
+    expect(isBlankForwardMessage({
+      text: "please publish this",
+      message: { text: "original message", user: "U_ORIGINAL", ts: "100.1" },
+    })).toBe(false);
   });
 
   test("falls back safely for empty or malformed blocks", () => {

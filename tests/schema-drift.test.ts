@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import postgres from "postgres";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import * as schema from "../src/db/schema";

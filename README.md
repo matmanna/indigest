@@ -50,6 +50,7 @@ _tldr: if you forget what to do, run `/in`_
 | `/in pub auto`           | Enable auto-approve for **all users**                                |
 | `/in pub auto @user`     | Enable auto-approve for a specific user                              |
 | `/in pub manual`         | Explicitly enable manual mode (clears auto-approve)                  |
+| `/in pub manual @user`   | Move a user to manual mode (their messages get a Yep!/No prompt)     |
 | `/in unpub`              | Disable indigest for a channel                                       |
 | `/in unpub auto [@user]` | Remove auto-approve for a user (or all users)                        |
 | `/in sub #channel`       | Subscribe this channel to receive forwarded messages from `#channel` |
@@ -83,6 +84,26 @@ if channel A subscrbies to channel B, when a message is approved in channel B, i
 
 > [!NOTE]
 > exceptions to publishing: messages that are empty, contain only a link, or are `@here`/`@channel` pings (when recent substantive content exists) are not forwarded.
+
+## channel properties & subscriber profile overrides
+
+a pubbing channel can define **static `properties`** (a JSON key/value map), and
+each subscribing channel can pin its own bot **profile picture and username** for
+forwards from a given source. The override is either a literal value/URL, or a
+`[property]` that resolves against the source channel's static properties.
+
+```
+# on the pubbing channel: define static properties
+/in prop set {"title":"Hack Club","logo":"https://.../logo.png"}
+
+# on the subscribing channel, per source
+/in sub pfp #source [logo]        # use the source's "logo" property as the pfp
+/in sub name #source [title]      # use the source's "title" property as the username
+/in sub name #source "Indigest"   # or a fixed username
+/in sub pfp #source clear         # reset to the original author's picture
+```
+
+Unset or unresolved overrides fall back to the original author's name/picture.
 
 ## setting metadata
 

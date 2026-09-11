@@ -27,6 +27,7 @@ const channelSchema = z.object({
   trackReplies: z.boolean(),
   metadataSchema: z.string(),
   metadataRequired: z.boolean(),
+  properties: z.string(),
   createdAt: z.string(),
 });
 

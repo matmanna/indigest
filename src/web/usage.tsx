@@ -59,6 +59,24 @@ Slash commands for managing indigest channels. Run these in Slack like:
 - \`/in schema get\` — View the current schema.
 - \`/in schema clear\` — Remove the schema.
 
+## Channel Properties
+
+Static key/value properties on a pubbing channel, referenced by subscriber
+profile overrides (see below).
+
+- \`/in prop set <json>\` — Set properties (e.g. \`{"title": "Hack Club"}\`).
+- \`/in prop get\` — View the current properties.
+- \`/in prop clear\` — Remove the properties.
+
+## Subscriber Profile Overrides
+
+Customize how this channel's forwards appear. The value can be a static
+string/URL, or a \`[property]\` that resolves against the source channel's
+static properties. \`clear\` resets to the original author.
+
+- \`/in sub pfp #source <url-or-[property]>\` — Pin a profile picture for forwards from #source.
+- \`/in sub name #source <name-or-[property]>\` — Pin a bot username for forwards from #source.
+
 ## Backfill Shortcut
 
 If you want to add an older message to the feed without waiting for the Yep!/No prompt:

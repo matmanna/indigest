@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import postgres from "postgres";
 import { getDb } from "../src/db";
 import * as q from "../src/db/queries";
@@ -10,7 +10,7 @@ const suffix = `test-${Date.now()}`;
 const sourceId = `C-${suffix}`;
 const subscriberId = `C-sub-${suffix}`;
 
-const channel = (id: string, enabled = true): q.Channel => ({ id, name: id, teamId: "T1", enabled, linkMode: false, webhookUrl: "", autoApproveUsers: ["a", "b"], approvedPosters: [], accessPermUsers: ["*"], trackReplies: false, metadataSchema: "", metadataRequired: false, createdAt: "" });
+const channel = (id: string, enabled = true): q.Channel => ({ id, name: id, teamId: "T1", enabled, linkMode: false, webhookUrl: "", autoApproveUsers: ["a", "b"], approvedPosters: [], accessPermUsers: ["*"], trackReplies: false, metadataSchema: "", metadataRequired: false, properties: "", createdAt: "" });
 const message = (slackTs: string, text: string, extra: Partial<q.Message> = {}): q.Message => ({ slackTs, channelId: sourceId, userId: "U1", userName: "Ada", text, timestamp: `2026-01-01T00:00:${slackTs.split(".")[1] || "00"}.000Z`, metadata: { ok: true }, ...extra });
 
 beforeAll(async () => {
@@ -39,10 +39,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("database queries", () => {
   test("message upsert, CRUD, filters, and count", async () => {
     await q.upsertChannel(db, channel(sourceId));
     await q.upsertMessage(db, message("1.01", "first"));
-    await q.upsertMessage(db, message("2.02", "second", { userId: "U2", threadTs: "1.01", timestamp: "2026-01-02T00:00:00.000Z" }));
+    await q.upsertMessage(db, message("2.02", "second", { userId: "U2,U3", userName: "Ada,Forwarded author", threadTs: "1.01", timestamp: "2026-01-02T00:00:00.000Z" }));
     await q.upsertMessage(db, message("1.01", "updated"));
     expect((await q.getMessageBySlackTs(db, sourceId, "1.01"))?.text).toBe("updated");
     expect((await q.getMessages(db, sourceId, { userId: "U2" })).length).toBe(1);
+    expect((await q.getMessages(db, sourceId, { userId: "U3" })).length).toBe(1);
+    expect((await q.getMessageBySlackTs(db, sourceId, "2.02"))?.authorIds).toEqual(["U2", "U3"]);
     expect((await q.getMessages(db, sourceId, { threadTs: "1.01" })).length).toBe(1);
     expect((await q.getMessages(db, sourceId, { after: "2026-01-02" })).length).toBe(1);
     expect((await q.getMessages(db, sourceId, { before: "2026-01-01" })).length).toBe(1);

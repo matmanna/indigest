@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import {
   canAccessFeed,
   findExistingForward,
@@ -9,15 +9,21 @@ import {
   isMessageEmpty,
   isSlackPermalink,
   metadataRequirementSatisfied,
+  resolveSubProfileValue,
   shouldForward,
 } from "../src/app";
 import { generateApiKey, hashSecret, verifySecret } from "../src/lib/api-keys";
-import { parseBool, toBool } from "../src/db/queries";
+import {
+  mergeAuthorLists,
+  parseBool,
+  splitAuthorList,
+  toBool,
+} from "../src/db/queries";
 
 const channel = (accessPermUsers = ["*"]) => ({
   id: "C1", name: "feed", teamId: "T1", enabled: true, linkMode: false,
   webhookUrl: "", autoApproveUsers: [], approvedPosters: [], accessPermUsers,
-  trackReplies: false, metadataSchema: "", metadataRequired: false, createdAt: "",
+  trackReplies: false, metadataSchema: "", metadataRequired: false, properties: "", createdAt: "",
 });
 const msg = (text: string) => ({ slackTs: "1.1", channelId: "C1", userId: "U1", userName: "u", text, timestamp: new Date().toISOString(), metadata: {} });
 
@@ -87,6 +93,15 @@ describe("pure helpers", () => {
     expect(metadataRequirementSatisfied(true, {})).toBe(false);
     expect(metadataRequirementSatisfied(true, { title: "Launch" })).toBe(true);
   });
+  test("normalizes comma-separated author lists", () => {
+    expect(mergeAuthorLists("U_FORWARDER", "U_ORIGINAL", "U_FORWARDER")).toBe(
+      "U_FORWARDER,U_ORIGINAL",
+    );
+    expect(splitAuthorList("U_FORWARDER, U_ORIGINAL")).toEqual([
+      "U_FORWARDER",
+      "U_ORIGINAL",
+    ]);
+  });
   test("enforces public and restricted feed access", () => {
     expect(canAccessFeed(channel(), null)).toBe(true);
     expect(canAccessFeed(channel(["U123"]), { type: "session", slackId: "U123" })).toBe(true);
@@ -109,5 +124,26 @@ describe("pure helpers", () => {
     expect(key.keyPrefix).toHaveLength(12);
     expect(await verifySecret(key.fullKey, await key.secretHash)).toBe(true);
     expect(await verifySecret(`${key.fullKey}x`, await hashSecret(key.fullKey))).toBe(false);
+  });
+  describe("resolveSubProfileValue", () => {
+    const props = { title: "Hack Club", depth: { level: "3" }, tags: ["a", "b"] };
+    test("returns static string verbatim", () => {
+      expect(resolveSubProfileValue("Indigest Bot", props)).toBe("Indigest Bot");
+      expect(resolveSubProfileValue("  spaced  ", props)).toBe("spaced");
+    });
+    test("returns null when unset", () => {
+      expect(resolveSubProfileValue(undefined, props)).toBeNull();
+      expect(resolveSubProfileValue("", props)).toBeNull();
+      expect(resolveSubProfileValue(null, props)).toBeNull();
+    });
+    test("resolves a bracketed property from the channel properties map", () => {
+      expect(resolveSubProfileValue("[title]", props)).toBe("Hack Club");
+      expect(resolveSubProfileValue("[depth.level]", props)).toBe("3");
+    });
+    test("returns null when the referenced property is missing", () => {
+      expect(resolveSubProfileValue("[missing]", props)).toBeNull();
+      expect(resolveSubProfileValue("[missing]", null)).toBeNull();
+      expect(resolveSubProfileValue("[title]", null)).toBeNull();
+    });
   });
 });

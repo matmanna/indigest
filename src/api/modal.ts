@@ -6,6 +6,7 @@ interface SchemaField {
   type: string; // "plain_text_input" | "file_input" | "multi_static_select" | "static_select" | "datepicker" | "url_text_input" | "email_text_input" | "number_input"
   placeholder?: string;
   initial_value?: string;
+  optional?: boolean;
   multiline?: boolean;
   min_length?: number;
   max_length?: number;
@@ -102,7 +103,7 @@ function buildBlocks(
     blocks.push({
       type: "input",
       block_id: `field_${field.action_id}`,
-      optional: true,
+      optional: field.optional !== false,
       label: { type: "plain_text", text: field.label, emoji: true },
       element,
     });

@@ -1,4 +1,4 @@
-import { eq, sql, and, inArray } from "drizzle-orm";
+import { eq, sql, and, inArray, or } from "drizzle-orm";
 import * as schema from "./schema";
 import type { DB } from "./index";
 
@@ -17,6 +17,7 @@ export interface Channel {
   trackReplies: boolean;
   metadataSchema: string;
   metadataRequired: boolean;
+  properties: string;
   createdAt: string;
 }
 
@@ -30,6 +31,11 @@ export interface Message {
   text: string;
   /** Original Slack text, retained in memory for forwarding-policy checks. */
   rawText?: string;
+  /** Original author when this Slack message is itself a forwarded message. */
+  originalUserId?: string;
+  originalUserName?: string;
+  authorIds?: string[];
+  authorNames?: string[];
   timestamp: string;
   metadata: any;
 }
@@ -38,6 +44,8 @@ export interface Subscription {
   id?: number;
   subscriberChannelId: string;
   sourceChannelId: string;
+  profileName?: string | null;
+  profileImageUrl?: string | null;
   createdAt: string;
 }
 
@@ -60,6 +68,29 @@ export function parseBool(v: unknown): boolean {
 }
 
 export const toBool = parseBool;
+
+export function splitAuthorList(value: unknown): string[] {
+  return typeof value === "string"
+    ? value.split(",").map((item) => item.trim()).filter(Boolean)
+    : [];
+}
+
+export function mergeAuthorLists(...values: unknown[]): string {
+  const authors: string[] = [];
+  for (const value of values) {
+    for (const author of splitAuthorList(value)) {
+      if (!authors.includes(author)) authors.push(author);
+    }
+  }
+  return authors.join(",");
+}
+
+function authorFilter(column: any, userId: string) {
+  return or(
+    eq(column, userId),
+    sql`(',' || ${column} || ',') LIKE ${`%,${userId},%`}`,
+  );
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function rowToChannel(r: any): Channel {
@@ -85,6 +116,7 @@ function rowToChannel(r: any): Channel {
     trackReplies: parseBool(r.trackReplies),
     metadataSchema: r.metadataSchema,
     metadataRequired: parseBool(r.metadataRequired),
+    properties: r.properties || "{}",
     createdAt: r.createdAt,
   };
 }
@@ -98,6 +130,8 @@ function rowToMessage(r: any): Message {
     threadTs: r.threadTs || undefined,
     userId: r.userId,
     userName: r.userName,
+    authorIds: splitAuthorList(r.userId),
+    authorNames: splitAuthorList(r.userName),
     text: r.text,
     timestamp: r.timestamp,
     metadata:
@@ -113,6 +147,8 @@ function rowToSubscription(r: any): Subscription {
     id: r.id,
     subscriberChannelId: r.subscriberChannelId,
     sourceChannelId: r.sourceChannelId,
+    profileName: r.profileName ?? null,
+    profileImageUrl: r.profileImageUrl ?? null,
     createdAt: r.createdAt,
   };
 }
@@ -148,6 +184,7 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
       trackReplies: ch.trackReplies ? "1" : "0",
       metadataSchema: ch.metadataSchema,
       metadataRequired: ch.metadataRequired ? "1" : "0",
+      properties: ch.properties,
       createdAt: sql`COALESCE(NULLIF((SELECT created_at FROM channels WHERE id = ${ch.id}), ''), to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))`,
     })
     .onConflictDoUpdate({
@@ -164,6 +201,7 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
         trackReplies: ch.trackReplies ? "1" : "0",
         metadataSchema: ch.metadataSchema,
         metadataRequired: ch.metadataRequired ? "1" : "0",
+        properties: ch.properties,
       },
     });
 }
@@ -200,8 +238,8 @@ export async function upsertMessage(db: DB, msg: Message): Promise<void> {
     .values({
       slackTs: msg.slackTs,
       channelId: msg.channelId,
-      userId: msg.userId,
-      userName: msg.userName,
+      userId: mergeAuthorLists(msg.userId, msg.originalUserId),
+      userName: mergeAuthorLists(msg.userName, msg.originalUserName),
       text: msg.text,
       threadTs: msg.threadTs || null,
       timestamp: msg.timestamp,
@@ -213,8 +251,8 @@ export async function upsertMessage(db: DB, msg: Message): Promise<void> {
     .onConflictDoUpdate({
       target: [schema.messages.channelId, schema.messages.slackTs],
       set: {
-        userId: msg.userId,
-        userName: msg.userName,
+        userId: mergeAuthorLists(msg.userId, msg.originalUserId),
+        userName: mergeAuthorLists(msg.userName, msg.originalUserName),
         text: msg.text,
         threadTs: msg.threadTs || null,
         timestamp: msg.timestamp,
@@ -259,7 +297,7 @@ export async function getMessages(
   const conditions = [eq(schema.messages.channelId, channelId)];
   if (after) conditions.push(sql`${schema.messages.timestamp} >= ${after}`);
   if (before) conditions.push(sql`${schema.messages.timestamp} <= ${before}`);
-  if (userId) conditions.push(eq(schema.messages.userId, userId));
+  if (userId) conditions.push(authorFilter(schema.messages.userId, userId));
   if (threadTs) conditions.push(eq(schema.messages.threadTs, threadTs));
 
   const rows = await db
@@ -287,7 +325,7 @@ export async function getMessageCount(
   const conditions = [eq(schema.messages.channelId, channelId)];
   if (after) conditions.push(sql`${schema.messages.timestamp} >= ${after}`);
   if (before) conditions.push(sql`${schema.messages.timestamp} <= ${before}`);
-  if (userId) conditions.push(eq(schema.messages.userId, userId));
+  if (userId) conditions.push(authorFilter(schema.messages.userId, userId));
   if (threadTs) conditions.push(eq(schema.messages.threadTs, threadTs));
 
   const [result] = await db
@@ -359,6 +397,28 @@ export async function removeSubscription(
 ): Promise<void> {
   await db
     .delete(schema.subscriptions)
+    .where(
+      and(
+        eq(schema.subscriptions.subscriberChannelId, subscriberChannelId),
+        eq(schema.subscriptions.sourceChannelId, sourceChannelId),
+      ),
+    );
+}
+
+export async function updateSubscriptionOverrides(
+  db: DB,
+  subscriberChannelId: string,
+  sourceChannelId: string,
+  overrides: { profileName?: string | null; profileImageUrl?: string | null },
+): Promise<void> {
+  const set: Record<string, string | null> = {};
+  if (overrides.profileName !== undefined) set.profileName = overrides.profileName;
+  if (overrides.profileImageUrl !== undefined)
+    set.profileImageUrl = overrides.profileImageUrl;
+  if (Object.keys(set).length === 0) return;
+  await db
+    .update(schema.subscriptions)
+    .set(set)
     .where(
       and(
         eq(schema.subscriptions.subscriberChannelId, subscriberChannelId),

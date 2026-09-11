@@ -70,6 +70,22 @@ export function extractMessageText(msg: any): string {
     for (const block of msg.blocks) {
       if (block.type === "section" && block.text?.text) {
         parts.push(block.text.text);
+      } else if (block.type === "rich_text" && block.elements) {
+        const extractRichText = (elements: any[]): string[] => {
+          const richParts: string[] = [];
+          for (const element of elements) {
+            if (typeof element.text === "string" && element.text) {
+              richParts.push(element.text);
+            } else if (element.type === "emoji" && element.name) {
+              richParts.push(`:${element.name}:`);
+            }
+            if (Array.isArray(element.elements)) {
+              richParts.push(...extractRichText(element.elements));
+            }
+          }
+          return richParts;
+        };
+        parts.push(...extractRichText(block.elements));
       } else if (block.type === "context" && block.elements) {
         for (const el of block.elements) {
           if (el.type === "mrkdwn" || el.type === "plain_text") {
@@ -80,7 +96,172 @@ export function extractMessageText(msg: any): string {
     }
     if (parts.length > 0) return parts.join("\n");
   }
+  if (msg.attachments && msg.attachments.length > 0) {
+    const parts: string[] = [];
+    for (const attachment of msg.attachments) {
+      for (const value of [
+        attachment.pretext,
+        attachment.title,
+        attachment.text,
+      ]) {
+        if (typeof value === "string" && value) parts.push(value);
+      }
+      for (const field of attachment.fields || []) {
+        if (field.title) parts.push(String(field.title));
+        if (field.value) parts.push(String(field.value));
+      }
+    }
+    if (parts.length > 0) return parts.join("\n");
+  }
+  if (msg.message && typeof msg.message === "object") {
+    const nestedText = extractMessageText(msg.message);
+    if (nestedText) return nestedText;
+  }
   return msg.text || "";
+}
+
+export function extractOriginalAuthor(msg: any): {
+  userId?: string;
+  userName?: string;
+} {
+  if (msg.originalUserId || msg.originalUserName) {
+    return {
+      userId: msg.originalUserId,
+      userName: msg.originalUserName,
+    };
+  }
+
+  const nested = msg.message || msg.original_message;
+  if (nested?.user || nested?.username || nested?.user_name) {
+    return {
+      userId: nested.user,
+      userName: nested.username || nested.user_name,
+    };
+  }
+
+  const attachment = (msg.attachments || []).find(
+    (item: any) => item.author_id || item.author_name,
+  );
+  if (attachment) {
+    return {
+      userId: attachment.author_id,
+      userName: attachment.author_name,
+    };
+  }
+
+  return {};
+}
+
+export function extractOriginalTimestamp(msg: any): string | undefined {
+  const nested = msg.message || msg.original_message;
+  const nestedTimestamp = nested?.ts || nested?.message_ts || nested?.timestamp;
+  if (typeof nestedTimestamp === "string" && nestedTimestamp) {
+    return nestedTimestamp;
+  }
+  const attachmentTimestamp = (msg.attachments || []).find(
+    (item: any) => item.ts || item.timestamp,
+  );
+  const timestamp = attachmentTimestamp?.ts || attachmentTimestamp?.timestamp;
+  return typeof timestamp === "string" && timestamp ? timestamp : undefined;
+}
+
+/** Text written by the person sharing a nested Slack message, excluding the original. */
+export function extractForwarderComment(msg: any): string {
+  const nested = msg.message || msg.original_message;
+  if (nested && typeof msg.text === "string") return msg.text;
+  return typeof msg.rawText === "string" ? msg.rawText : msg.text || "";
+}
+
+export function isBlankForwardMessage(msg: any): boolean {
+  const nested = msg.message || msg.original_message;
+  const attachmentAuthor = (msg.attachments || []).some(
+    (item: any) => item.author_id || item.author_name,
+  );
+  const isForward = Boolean(nested || attachmentAuthor || msg.originalUserId);
+  return isForward && !extractForwarderComment(msg).trim();
+}
+
+export function resolveMessageTimestamp(
+  msg: any,
+  fallbackTimestamp: string,
+  existingTimestamp?: string,
+): string {
+  const originalTimestamp = extractOriginalTimestamp(msg);
+  if (isBlankForwardMessage(msg) || !extractMessageText(msg).trim()) {
+    if (originalTimestamp) return slackTsToTime(originalTimestamp).toISOString();
+    if (existingTimestamp) return existingTimestamp;
+  }
+  return slackTsToTime(fallbackTimestamp).toISOString();
+}
+
+export function resolveStoredAuthors(
+  msg: any,
+  forwarderId: string,
+  forwarderName: string,
+): { userId: string; userName: string } {
+  const originalAuthor = extractOriginalAuthor(msg);
+  const isBlankForward = isBlankForwardMessage(msg);
+  if (
+    isBlankForward &&
+    (originalAuthor.userId || originalAuthor.userName)
+  ) {
+    return {
+      userId: originalAuthor.userId || "",
+      userName: originalAuthor.userName || "",
+    };
+  }
+  return {
+    userId: q.mergeAuthorLists(forwarderId, originalAuthor.userId),
+    userName: q.mergeAuthorLists(forwarderName, originalAuthor.userName),
+  };
+}
+
+function logMessageContentProbe(stage: string, msg: any): void {
+  const extractedText = msg.rawText ?? extractMessageText(msg);
+  const originalAuthor = extractOriginalAuthor(msg);
+  console.log(
+    `[message-content:${stage}]`,
+    JSON.stringify({
+      channelId: msg.channelId || msg.channel,
+      slackTs: msg.slackTs || msg.ts,
+      subtype: msg.subtype || null,
+      text: typeof msg.text === "string" ? msg.text : null,
+      textLength: typeof msg.text === "string" ? msg.text.length : 0,
+      rawText: typeof msg.rawText === "string" ? msg.rawText : null,
+      rawTextLength: typeof msg.rawText === "string" ? msg.rawText.length : null,
+      extractedText,
+      extractedTextLength: extractedText.length,
+      originalAuthor,
+      blocks: Array.isArray(msg.blocks)
+        ? msg.blocks.map((block: any) => ({
+          type: block.type,
+          text: block.text?.text || null,
+          elementTypes: Array.isArray(block.elements)
+            ? block.elements.map((element: any) => element.type)
+            : [],
+        }))
+        : [],
+      attachments: Array.isArray(msg.attachments)
+        ? msg.attachments.map((attachment: any) => ({
+          title: attachment.title || null,
+          text: attachment.text || null,
+          pretext: attachment.pretext || null,
+          fieldCount: Array.isArray(attachment.fields)
+            ? attachment.fields.length
+            : 0,
+        }))
+        : [],
+      files: Array.isArray(msg.files)
+        ? msg.files.map((file: any) => ({
+          id: file.id || null,
+          name: file.name || null,
+          title: file.title || null,
+          mimetype: file.mimetype || null,
+          hasPreview: Boolean(file.preview || file.plain_text),
+        }))
+        : [],
+    }),
+  );
 }
 
 function slackTsToTime(ts: string): Date {
@@ -382,8 +563,9 @@ export function canApproveMessage({
   isManager: boolean;
   isLockdown: boolean;
 }): boolean {
+  const messageUsers = q.splitAuthorList(messageUser);
   if (isLockdown || isManager) return true;
-  if (approvedPosters.includes("poster") && clickingUser === messageUser) {
+  if (approvedPosters.includes("poster") && messageUsers.includes(clickingUser)) {
     return true;
   }
   return approvedPosters.includes(clickingUser);
@@ -432,6 +614,33 @@ export function metadataRequirementSatisfied(
   return !metadataRequired || hasProvidedMetadata(metadata);
 }
 
+/**
+ * Resolve a sub channel's profile override string. A value wrapped in square
+ * brackets (e.g. `[title]` or `[a.b]` / `[a].[b]`) is looked up in the source
+ * channel's static `properties` map. Any other string is returned verbatim.
+ * Returns `null` when there is no override or the referenced property is unset.
+ * @param props - parsed source-channel static properties object
+ */
+export function resolveSubProfileValue(
+  value: string | undefined | null,
+  props: Record<string, unknown> | null,
+): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const bracketMatch = trimmed.match(/^\[(.+)\]$/);
+  if (!bracketMatch) return value.trim();
+  if (!props || typeof props !== "object") return null;
+  const keyPath = bracketMatch[1]!.replace(/\]\[/g, ".");
+  const resolved = keyPath.split(".").reduce<unknown>(
+    (acc, key) => (acc && typeof acc === "object" ? (acc as any)[key] : undefined),
+    props,
+  );
+  if (typeof resolved === "string") return resolved;
+  if (Array.isArray(resolved)) return resolved.join(",");
+  if (resolved === 0 || resolved === false) return String(resolved);
+  return null;
+}
+
 export function findExistingForward(
   actions: q.BotAction[],
   subscriberChannelId: string,
@@ -471,6 +680,7 @@ async function forwardToSubscribers(
   db: any,
   slack: WebClient,
 ) {
+  logMessageContentProbe("forward", msg);
   await syncChannelName(db, slack, sourceChannel);
   const subs = await q.getSubscribersBySource(db, msg.channelId);
   if (subs.length === 0) {
@@ -521,24 +731,28 @@ async function forwardToSubscribers(
   const msgDate = new Date(msg.timestamp);
   const dateStr = `${msgDate.getFullYear()}-${msgDate.getMonth() + 1}-${msgDate.getDate()}`;
 
-  let displayName = msg.userName || "unknown";
+  const originalAuthor = extractOriginalAuthor(msg);
+  let displayName = originalAuthor.userName || msg.userName || "unknown";
   let avatarUrl = "";
 
-  if (msg.userId) {
+  const attributionUserId =
+    originalAuthor.userId || (originalAuthor.userName ? "" : msg.userId);
+  if (attributionUserId) {
     try {
-      const u = await slack.users.info({ user: msg.userId });
+      const u = await slack.users.info({ user: attributionUserId });
       const user = u.user as any;
       const profile = user?.profile;
       displayName =
         user?.real_name ||
         user?.name ||
         profile?.display_name ||
+        originalAuthor.userName ||
         msg.userName ||
         "unknown";
       avatarUrl =
         profile?.image_72 || profile?.image_original || profile?.image_48 || "";
     } catch (err) {
-      console.error(`Failed to fetch user info for ${msg.userId}:`, err);
+      console.error(`Failed to fetch user info for ${attributionUserId}:`, err);
     }
   }
 
@@ -619,6 +833,25 @@ async function forwardToSubscribers(
     const postUsername = originalAuthorName || displayName;
     const postIcon = originalAuthorAvatar || avatarUrl || undefined;
 
+    // Per-sub profile override: a sub channel can pin a static bot username /
+    // pfp, or reference a static [property] on the source channel. Falls back
+    // to the original author details above when unset or unresolved.
+    let props: Record<string, unknown> | null = null;
+    if (sourceChannel.properties && sourceChannel.properties !== "{}") {
+      try {
+        const parsed = JSON.parse(sourceChannel.properties);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          props = parsed;
+        }
+      } catch {
+        props = null;
+      }
+    }
+    const resolvedSubName = resolveSubProfileValue(sub.profileName, props);
+    const resolvedSubIcon = resolveSubProfileValue(sub.profileImageUrl, props);
+    const effectiveUsername = resolvedSubName ?? postUsername;
+    const effectiveIcon = resolvedSubIcon ?? postIcon;
+
     // Build the context footer
     // If this message has a forwardLink to another channel, show the full chain
     let footerText: string;
@@ -671,23 +904,25 @@ async function forwardToSubscribers(
     try {
       if (sourceChannel.linkMode) {
         const payload: any = {
-          username: postUsername,
-          icon_url: postIcon,
+          username: effectiveUsername,
+          icon_url: effectiveIcon,
           unfurl_links: false,
           unfurl_media: false,
           text: metadataSection
             ? metadataSection.trim() + "\n" + footerText
-            : forwardLink || footerText,
-          blocks: metadataSection
-            ? [
-              {
-                type: "section",
-                block_id: "indigest_metadata",
-                text: { type: "mrkdwn", text: metadataSection.trim() },
-              },
-              { type: "section", text: { type: "mrkdwn", text: footerText } },
-            ]
-            : undefined,
+            : footerText,
+          blocks: [
+            ...(metadataSection
+              ? [
+                {
+                  type: "section",
+                  block_id: "indigest_metadata",
+                  text: { type: "mrkdwn", text: metadataSection.trim() },
+                },
+              ]
+              : []),
+            { type: "context", elements: [{ type: "mrkdwn", text: footerText }] },
+          ],
         };
         const res = existingForward
           ? await slack.chat.update({
@@ -736,12 +971,12 @@ async function forwardToSubscribers(
       }
       blocks.push({ type: "context", elements: contextElements });
       const payload: any = {
-        username: postUsername,
-        icon_url: postIcon,
+        username: effectiveUsername,
+        icon_url: effectiveIcon,
         unfurl_links: false,
         unfurl_media: false,
         text: (originalText
-          ? `📰 *${postUsername}* in #${sourceChannel.name}:\n${originalText}`
+          ? `📰 *${effectiveUsername}* in #${sourceChannel.name}:\n${originalText}`
           : forwardLink
             ? `📰 Forwarded from #${sourceChannel.name}\n${forwardLink}`
             : `📰 *${displayName}* in #${sourceChannel.name}:\n${msg.text}`
@@ -1369,6 +1604,7 @@ app.get("/spec.json", (c) => {
             trackReplies: { type: "boolean" },
             metadataSchema: { type: "string" },
             metadataRequired: { type: "boolean" },
+            properties: { type: "string" },
             createdAt: { type: "string" },
           },
         },
@@ -1379,6 +1615,8 @@ app.get("/spec.json", (c) => {
             channelId: { type: "string" },
             userId: { type: "string" },
             userName: { type: "string" },
+            authorIds: { type: "array", items: { type: "string" } },
+            authorNames: { type: "array", items: { type: "string" } },
             text: { type: "string" },
             timestamp: { type: "string", format: "date-time" },
             metadata: { type: "object" },
@@ -1399,6 +1637,8 @@ app.get("/spec.json", (c) => {
             id: { type: "integer" },
             subscriberChannelId: { type: "string" },
             sourceChannelId: { type: "string" },
+            profileName: { type: "string", nullable: true },
+            profileImageUrl: { type: "string", nullable: true },
             createdAt: { type: "string" },
           },
         },
@@ -1445,6 +1685,18 @@ app.post("/events", async (c) => {
       if (ev.type === "member_joined_channel") {
         const auth = await slack.auth.test();
         if (ev.user !== auth.user_id) return;
+        const existing = await q.getChannel(db, ev.channel);
+        if (existing) {
+          try {
+            const conv = await slack.conversations.info({ channel: ev.channel });
+            const name = (conv.channel as any)?.name || "";
+            if (name && name !== existing.name) {
+              existing.name = name;
+              await q.upsertChannel(db, existing);
+            }
+          } catch { }
+          return;
+        }
         const ch: StoreChannel = {
           id: ev.channel,
           name: "",
@@ -1458,6 +1710,7 @@ app.post("/events", async (c) => {
           trackReplies: false,
           metadataSchema: "",
           metadataRequired: false,
+          properties: "",
           createdAt: "",
         };
         await q.upsertChannel(db, ch);
@@ -1485,6 +1738,7 @@ app.post("/events", async (c) => {
         const ch = await q.getChannel(db, ev.channel);
         if (!ch || !ch.enabled) return;
         await syncChannelName(db, slack, ch);
+        logMessageContentProbe("incoming", ev);
 
         // Log full event for debugging empty forward messages
         if (!ev.text && !ev.subtype) {
@@ -1501,28 +1755,31 @@ app.post("/events", async (c) => {
           );
         }
 
-        if (ch.autoApproveUsers.length > 0) {
+        const isAutoApproved =
+          ch.autoApproveUsers.includes("*") ||
+          ch.autoApproveUsers.includes(ev.user);
+
+        if (isAutoApproved) {
           console.log(`Auto-approving message from ${ev.user} in #${ch.name}`);
-          if (
-            !ch.autoApproveUsers.includes("*") &&
-            !ch.autoApproveUsers.includes(ev.user)
-          ) {
-            return;
-          }
           let userName = ev.user;
           try {
             const u = await slack.users.info({ user: ev.user });
             userName = (u.user as any)?.name || ev.user;
           } catch { }
           const metadata = {};
+          const rawText = extractMessageText(ev);
+          const text = resolveSlackMrkdwn(rawText);
+          const originalAuthor = extractOriginalAuthor(ev);
+          const storedTimestamp = resolveMessageTimestamp(ev, ev.ts);
+          const storedAuthors = resolveStoredAuthors(ev, ev.user, userName);
 
           await q.upsertMessage(db, {
             slackTs: ev.ts,
             channelId: ev.channel,
-            userId: ev.user,
-            userName,
-            text: resolveSlackMrkdwn(ev.text),
-            timestamp: slackTsToTime(ev.ts).toISOString(),
+            userId: storedAuthors.userId,
+            userName: storedAuthors.userName,
+            text,
+            timestamp: storedTimestamp,
             metadata,
           });
           await q.addBotAction(db, {
@@ -1537,10 +1794,10 @@ app.post("/events", async (c) => {
           await fireWebhook(ch, {
             slackTs: ev.ts,
             channelId: ev.channel,
-            userId: ev.user,
-            userName,
-            text: resolveSlackMrkdwn(ev.text),
-            timestamp: slackTsToTime(ev.ts).toISOString(),
+            userId: storedAuthors.userId,
+            userName: storedAuthors.userName,
+            text,
+            timestamp: storedTimestamp,
             metadata,
           });
           await forwardToSubscribers(
@@ -1549,9 +1806,11 @@ app.post("/events", async (c) => {
               channelId: ev.channel,
               userId: ev.user,
               userName,
-              text: resolveSlackMrkdwn(ev.text),
-              rawText: ev.text,
-              timestamp: slackTsToTime(ev.ts).toISOString(),
+              text,
+              rawText,
+              originalUserId: originalAuthor.userId,
+              originalUserName: originalAuthor.userName,
+              timestamp: storedTimestamp,
               metadata,
             },
             ch,
@@ -1623,6 +1882,7 @@ app.post("/events", async (c) => {
             await slack.chat.postMessage({
               channel: ev.channel,
               thread_ts: ev.ts,
+              text: "Expose this message to indigest via RSS and API?",
               blocks: [section, actions],
             });
           } catch { }
@@ -2063,13 +2323,33 @@ app.post("/interactions", async (c) => {
             userName = (u.user as any)?.name || userName;
           } catch { }
 
+          const originalAuthor = extractOriginalAuthor(msg);
+          const storedUserId = q.mergeAuthorLists(
+            msg.user || "",
+            originalAuthor.userId,
+          );
+          const storedUserName = q.mergeAuthorLists(
+            userName,
+            originalAuthor.userName,
+          );
+          const storedTimestamp = resolveMessageTimestamp(
+            msg,
+            messageTs,
+            storedOriginal?.timestamp,
+          );
+          const storedAuthors = resolveStoredAuthors(
+            msg,
+            msg.user || "",
+            userName,
+          );
+
           await q.upsertMessage(db, {
             slackTs: messageTs,
             channelId,
-            userId: msg.user || "",
-            userName,
+            userId: storedAuthors.userId,
+            userName: storedAuthors.userName,
             text: resolveSlackMrkdwn(extractMessageText(msg)),
-            timestamp: slackTsToTime(messageTs).toISOString(),
+            timestamp: storedTimestamp,
             metadata,
           });
           await q.addBotAction(db, {
@@ -2086,10 +2366,10 @@ app.post("/interactions", async (c) => {
           await fireWebhook(channel, {
             slackTs: messageTs,
             channelId,
-            userId: msg.user || "",
-            userName,
+            userId: storedAuthors.userId,
+            userName: storedAuthors.userName,
             text: resolveSlackMrkdwn(extractMessageText(msg)),
-            timestamp: slackTsToTime(messageTs).toISOString(),
+            timestamp: storedTimestamp,
             metadata,
           });
 
@@ -2149,6 +2429,7 @@ app.post("/interactions", async (c) => {
 
           // Also forward to any new subscribers that weren't captured in the initial forward
           if (!apiOnly) {
+            const originalAuthor = extractOriginalAuthor(msg);
             await forwardToSubscribers(
               {
                 slackTs: messageTs,
@@ -2157,7 +2438,9 @@ app.post("/interactions", async (c) => {
                 userName,
                 text: resolveSlackMrkdwn(extractMessageText(msg)),
                 rawText: extractMessageText(msg),
-                timestamp: slackTsToTime(messageTs).toISOString(),
+                originalUserId: originalAuthor.userId,
+                originalUserName: originalAuthor.userName,
+                timestamp: storedTimestamp,
                 metadata,
               },
               channel,
@@ -2338,6 +2621,12 @@ app.post("/interactions", async (c) => {
                 userName = msg.username || msg.bot_id;
               }
 
+              const originalAuthor = extractOriginalAuthor(msg);
+              const storedUserId = q.mergeAuthorLists(userId, originalAuthor.userId);
+              const storedUserName = q.mergeAuthorLists(userName, originalAuthor.userName);
+              const storedTimestamp = resolveMessageTimestamp(msg, messageTs);
+              const storedAuthors = resolveStoredAuthors(msg, userId, userName);
+
               const metadata = {};
 
               const ch = await q.getChannel(db, channelId);
@@ -2375,21 +2664,28 @@ app.post("/interactions", async (c) => {
               await q.upsertMessage(db, {
                 slackTs: messageTs,
                 channelId,
-                userId,
-                userName,
+                userId: storedAuthors.userId,
+                userName: storedAuthors.userName,
                 text: resolveSlackMrkdwn(extractMessageText(msg)),
-                timestamp: slackTsToTime(messageTs).toISOString(),
+                timestamp: storedTimestamp,
                 metadata,
               });
 
               const savedMsg = {
+                ...(() => {
+                  const originalAuthor = extractOriginalAuthor(msg);
+                  return {
+                    originalUserId: originalAuthor.userId,
+                    originalUserName: originalAuthor.userName,
+                  };
+                })(),
                 slackTs: messageTs,
                 channelId,
                 userId,
                 userName,
                 text: resolveSlackMrkdwn(extractMessageText(msg)),
                 rawText: extractMessageText(msg),
-                timestamp: slackTsToTime(messageTs).toISOString(),
+                timestamp: storedTimestamp,
                 metadata,
               };
               await q.addBotAction(db, {
@@ -2582,24 +2878,47 @@ app.post("/interactions", async (c) => {
             userName = (u.user as any)?.name || userName;
           } catch { }
 
+          const originalAuthor = extractOriginalAuthor(msg);
+          const storedUserId = q.mergeAuthorLists(
+            msg.user || "",
+            originalAuthor.userId,
+          );
+          const storedUserName = q.mergeAuthorLists(
+            userName,
+            originalAuthor.userName,
+          );
+          const storedTimestamp = resolveMessageTimestamp(msg, messageTs);
+          const storedAuthors = resolveStoredAuthors(
+            msg,
+            msg.user || "",
+            userName,
+          );
+
           await q.upsertMessage(db, {
             slackTs: messageTs,
             channelId,
-                userId: msg.user || "",
-                userName,
+                userId: storedAuthors.userId,
+                userName: storedAuthors.userName,
                 text: resolveSlackMrkdwn(extractMessageText(msg)),
-                timestamp: slackTsToTime(messageTs).toISOString(),
+                timestamp: storedTimestamp,
             metadata: {},
           });
 
           const savedMsg = {
+            ...(() => {
+              const originalAuthor = extractOriginalAuthor(msg);
+              return {
+                originalUserId: originalAuthor.userId,
+                originalUserName: originalAuthor.userName,
+              };
+            })(),
             slackTs: messageTs,
             channelId,
             userId: msg.user || "",
             userName,
             text: resolveSlackMrkdwn(extractMessageText(msg)),
             rawText: extractMessageText(msg),
-            timestamp: slackTsToTime(messageTs).toISOString(),
+            timestamp: storedTimestamp,
             metadata: {},
           };
           await fireWebhook(ch, savedMsg);
@@ -2770,8 +3089,93 @@ app.post("/interactions", async (c) => {
 });
 
 // === Slash Commands ===
-const slackSlashCommand = async (c: any) => {
-  const env = c.env;
+
+type SubOverrideCtx = {
+  subcmd: string;
+  arg: string;
+  subscriberChannelId: string;
+};
+
+async function handleSubOverride(
+  db: any,
+  slack: WebClient,
+  respond: (msg: string) => Promise<void>,
+  logCommand: (cmd: string, db: any) => Promise<void>,
+  ctx: SubOverrideCtx,
+): Promise<void> {
+  const { subcmd, arg, subscriberChannelId } = ctx;
+  const name = subcmd === "name" ? "bot username" : "profile picture";
+
+  if (!arg) {
+    await respond(
+      `Usage: \`/in sub ${subcmd} #source <value>\` — set the ${name} for forwards from #source. Use \`[property]\` to pull from the source channel's properties, or \`clear\` to reset.`,
+    );
+    return;
+  }
+
+  const match = arg.match(/^(<#(\w+)(\|[^>]*)?>|#(\S+))\s*([\s\S]*)$/);
+  if (!match) {
+    await respond(
+      `Usage: \`/in sub ${subcmd} #source <value>\` — I couldn't parse a source channel.`,
+    );
+    return;
+  }
+  const idFromRef = match[2];
+  const nameFromRef = match[4];
+  const value = (match[5] || "").trim();
+
+  let sourceId: string;
+  if (idFromRef) {
+    sourceId = idFromRef;
+  } else {
+    try {
+      const list = await slack.conversations.list({
+        types: "public_channel,private_channel",
+        limit: 1000,
+      });
+      const channels = (list.channels as any[]) || [];
+      const found = channels.find((ch) => ch.name === nameFromRef);
+      if (!found) {
+        await respond(`Channel #${nameFromRef} not found.`);
+        return;
+      }
+      sourceId = found.id;
+    } catch {
+      await respond("Couldn't look up channels.");
+      return;
+    }
+  }
+
+  const existing = await q.getSubscriptionsBySubscriber(db, subscriberChannelId);
+  const sub = existing.find((s) => s.sourceChannelId === sourceId);
+  if (!sub) {
+    await respond(
+      `This channel isn't subscribed to #${nameFromRef || sourceId} yet. Run \`/in sub #${nameFromRef || sourceId}\` first.`,
+    );
+    return;
+  }
+
+  if (value.toLowerCase() === "clear") {
+    await q.updateSubscriptionOverrides(db, subscriberChannelId, sourceId, {
+      profileName: subcmd === "name" ? null : undefined,
+      profileImageUrl: subcmd === "pfp" ? null : undefined,
+    });
+    await logCommand(`sub ${subcmd} clear`, db);
+    await respond(`${name} override cleared for this channel.`);
+    return;
+  }
+
+  await q.updateSubscriptionOverrides(db, subscriberChannelId, sourceId, {
+    profileName: subcmd === "name" ? value : undefined,
+    profileImageUrl: subcmd === "pfp" ? value : undefined,
+  });
+  await logCommand(`sub ${subcmd} ${value}`, db);
+  await respond(
+    `📰 ${name} override set for forwards from #${nameFromRef || sourceId}.${value.startsWith("[") ? " (resolved from properties)" : ""}`,
+  );
+}
+
+const slackSlashCommand = async (c: any) => {  const env = c.env;
   const body = await c.req.text();
   const form = new URLSearchParams(body);
 
@@ -2876,6 +3280,7 @@ const slackSlashCommand = async (c: any) => {
           trackReplies: false,
           metadataSchema: "",
           metadataRequired: false,
+          properties: "",
           createdAt: "",
         };
         await q.upsertChannel(db, ch);
@@ -2989,13 +3394,32 @@ const slackSlashCommand = async (c: any) => {
               return;
             }
             ch.enabled = true;
-            ch.autoApproveUsers = [];
-            await q.upsertChannel(db, ch);
-            await logCommand("pub manual", db);
+            const target = (arg || "").replace(/^<@(\w+)(\|[^>]*)?>$/, "$1").trim();
             const label =
               targetChannelId === sourceChannelId
                 ? "this channel"
                 : `#${ch.name}`;
+            if (target) {
+              const wasAuto = ch.autoApproveUsers.includes(target);
+              ch.autoApproveUsers = ch.autoApproveUsers.filter(
+                (id) => id !== target,
+              );
+              await q.upsertChannel(db, ch);
+              await logCommand(`pub manual <@${target}>`, db);
+              if (wasAuto) {
+                await respond(
+                  `📰 <@${target}> moved to manual mode in ${label}. Their messages will get a Yep!/No prompt.`,
+                );
+              } else {
+                await respond(
+                  `📰 <@${target}> was already on manual mode in ${label}. Their messages will get a Yep!/No prompt.`,
+                );
+              }
+              return;
+            }
+            ch.autoApproveUsers = [];
+            await q.upsertChannel(db, ch);
+            await logCommand("pub manual", db);
             await respond(
               `📰 Manual mode enabled for ${label}. Every message will get a Yep!/No prompt.\nRSS: ${baseUrl}/feed/${targetChannelId}\nJSON: ${baseUrl}/feed/${targetChannelId}.json`,
             );
@@ -3100,6 +3524,15 @@ const slackSlashCommand = async (c: any) => {
             await respond(
               "Only the channel creator or workspace admin can subscribe channels.",
             );
+            return;
+          }
+
+          if (subcmd === "pfp" || subcmd === "name") {
+            await handleSubOverride(db, slack, respond, logCommand, {
+              subcmd,
+              arg,
+              subscriberChannelId: sourceChannelId,
+            });
             return;
           }
 
@@ -3340,7 +3773,7 @@ const slackSlashCommand = async (c: any) => {
         default: {
           if (!cmd) {
             await respond(
-              "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\` | \`schema required on|off\`",
+              "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`sub pfp #source <value>\` | \`sub name #source <value>\` — set per-source profile overrides\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\` | \`schema required on|off\`\n• \`prop set <json>\` | \`prop get\` | \`prop clear\` — channel properties",
             );
             return;
           }
@@ -3482,6 +3915,68 @@ const slackSlashCommand = async (c: any) => {
             return;
           }
 
+          if (cmd === "prop") {
+            if (subcmd === "get") {
+              if (!ch.properties || ch.properties === "{}") {
+                await respond("No properties configured for this channel.");
+                return;
+              }
+              try {
+                const pretty = JSON.stringify(
+                  JSON.parse(ch.properties),
+                  null,
+                  2,
+                );
+                await respond(`\`\`\`${pretty}\`\`\``);
+              } catch {
+                await respond(`Raw properties:\n${ch.properties}`);
+              }
+              return;
+            }
+
+            if (subcmd === "clear") {
+              ch.properties = "{}";
+              await q.upsertChannel(db, ch);
+              await logCommand("prop clear", db);
+              await respond("Channel properties cleared.");
+              return;
+            }
+
+            if (subcmd === "set") {
+              if (!arg) {
+                await respond(
+                  "Usage: \`/in prop set <json>\` — provide a valid properties JSON object.",
+                );
+                return;
+              }
+              try {
+                const parsed = JSON.parse(arg);
+                if (
+                  !parsed ||
+                  typeof parsed !== "object" ||
+                  Array.isArray(parsed)
+                ) {
+                  await respond("Properties must be a JSON object.");
+                  return;
+                }
+                ch.properties = JSON.stringify(parsed);
+                await q.upsertChannel(db, ch);
+                await logCommand("prop set", db);
+                await respond(
+                  `📰 Channel properties set: ${Object.keys(parsed).join(", ")}`,
+                );
+              } catch (e: any) {
+                await respond(`Invalid JSON: ${e.message}`);
+              }
+              return;
+            }
+
+            await respond(
+              "Usage: \`/in prop set <json>\` | \`/in prop get\` | \`/in prop clear\`",
+            );
+            return;
+          }
+
           if (cmd === "perms") {
             if (subcmd === "get" || (!subcmd && !arg)) {
               if (ch.approvedPosters.length === 0) {
@@ -3555,7 +4050,7 @@ const slackSlashCommand = async (c: any) => {
           }
 
           await respond(
-            "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\`",
+            "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`sub pfp #source <value>\` | \`sub name #source <value>\` — set per-source profile overrides\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\`\n• \`prop set <json>\` | \`prop get\` | \`prop clear\` — channel properties",
           );
         }
       }

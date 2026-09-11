@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { extractMetadataFromView } from "../src/api/modal";
 import { isMetadataValueSet } from "../src/app";
 

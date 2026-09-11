@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { canAccessFeed, canApproveMessage, canEditBotMessage, upsertMetadataBlock } from "../src/app";
 import { canCreateApiKeyForChannel } from "../src/api/routers/apiKeys";
 
-const feed = (users: string[]) => ({ id: "C1", name: "", teamId: "", enabled: true, linkMode: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], accessPermUsers: users, trackReplies: false, metadataSchema: "", metadataRequired: false, createdAt: "" });
+const feed = (users: string[]) => ({ id: "C1", name: "", teamId: "", enabled: true, linkMode: false, webhookUrl: "", autoApproveUsers: [], approvedPosters: [], accessPermUsers: users, trackReplies: false, metadataSchema: "", metadataRequired: false, properties: "", createdAt: "" });
 
 describe("feed access invariants", () => {
   test("wildcard always allows", () => expect(canAccessFeed(feed(["*"]), null)).toBe(true));
@@ -59,6 +59,15 @@ describe("feed access invariants", () => {
     expect(canApproveMessage({
       approvedPosters: ["poster", "U999"], clickingUser: "U999", messageUser: "U123",
       isManager: false, isLockdown: false,
+    })).toBe(true);
+  });
+  test("poster mode recognizes any author in a comma-separated author list", () => {
+    expect(canApproveMessage({
+      approvedPosters: ["poster"],
+      clickingUser: "U_ORIGINAL",
+      messageUser: "U_FORWARDER,U_ORIGINAL",
+      isManager: false,
+      isLockdown: false,
     })).toBe(true);
   });
   test("metadata modal submissions enforce the same approval rule before forwarding", () => {

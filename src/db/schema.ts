@@ -22,6 +22,7 @@ export const channels = pgTable("channels", {
   trackReplies: text("track_replies").notNull().default("0"),
   metadataSchema: text("metadata_schema").notNull().default(""),
   metadataRequired: text("metadata_required").notNull().default("0"),
+  properties: text("properties").notNull().default("{}"),
   createdAt: text("created_at").notNull().default(""),
   accessPermUsers: text("access_perm_users").notNull().default("*"),
 });
@@ -54,6 +55,8 @@ export const subscriptions = pgTable(
     id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
     subscriberChannelId: text("subscriber_channel_id").notNull(),
     sourceChannelId: text("source_channel_id").notNull(),
+    profileName: text("profile_name"),
+    profileImageUrl: text("profile_image_url"),
     createdAt: text("created_at").notNull().default("now()"),
   },
   (t) => ({
