@@ -13,6 +13,8 @@ export interface Channel {
   webhookUrl: string;
   autoApproveUsers: string[];
   manualUsers: string[];
+  /** "message": react to every message per disposition. "shortcut": only publish via the message shortcut. */
+  triggerMode: "message" | "shortcut";
   approvedPosters: string[];
   accessPermUsers: string[];
   trackReplies: boolean;
@@ -106,6 +108,7 @@ function rowToChannel(r: any): Channel {
       ? r.autoApproveUsers.split(",").filter(Boolean)
       : [],
     manualUsers: r.manualUsers ? r.manualUsers.split(",").filter(Boolean) : [],
+    triggerMode: r.triggerMode === "shortcut" ? "shortcut" : "message",
     approvedPosters: r.approvedPosters
       ? r.approvedPosters.split(",").filter(Boolean)
       : [],
@@ -182,6 +185,7 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
       webhookUrl: ch.webhookUrl,
       autoApproveUsers: ch.autoApproveUsers.join(","),
       manualUsers: ch.manualUsers.join(","),
+      triggerMode: ch.triggerMode,
       approvedPosters: ch.approvedPosters.join(","),
       accessPermUsers: ch.accessPermUsers.join(","),
       trackReplies: ch.trackReplies ? "1" : "0",
@@ -200,6 +204,7 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
         webhookUrl: ch.webhookUrl,
         autoApproveUsers: ch.autoApproveUsers.join(","),
         manualUsers: ch.manualUsers.join(","),
+        triggerMode: ch.triggerMode,
         approvedPosters: ch.approvedPosters.join(","),
         accessPermUsers: ch.accessPermUsers.join(","),
         trackReplies: ch.trackReplies ? "1" : "0",

@@ -574,22 +574,84 @@ export function canApproveMessage({
 export type PublishDisposition = "auto" | "prompt" | "drop";
 
 /**
- * Decide how a message from `userId` should be handled for a channel with
- * publish whitelists. If either whitelist (auto or manual) is non-empty, only
- * users on a whitelist are published: auto users are auto-published, manual
- * users get a Yep!/No prompt, and everyone else is dropped. With no whitelist,
- * everyone is prompted.
+ * Decide how a message should be handled for a channel with publish
+ * whitelists. `identity` is the author's Slack user ID, or for a bot message
+ * whose event carries no user field, its bot ID (or both, since either may be
+ * whitelisted) - a match on any identity counts. If either whitelist (auto or
+ * manual) is non-empty, only whitelisted identities are published: auto
+ * identities are auto-published, manual identities get a Yep!/No prompt, and
+ * everyone else is dropped. With no whitelist, everyone is prompted.
  */
 export function resolvePublishDisposition(
   ch: { autoApproveUsers: string[]; manualUsers: string[] },
-  userId: string,
+  identity: string | (string | undefined)[],
 ): PublishDisposition {
+  const ids = (Array.isArray(identity) ? identity : [identity]).filter(
+    (id): id is string => !!id,
+  );
   const auto = ch.autoApproveUsers.filter(Boolean);
-  if (auto.includes("*") || auto.includes(userId)) return "auto";
+  if (auto.includes("*") || ids.some((id) => auto.includes(id))) return "auto";
   const manual = ch.manualUsers.filter(Boolean);
-  if (manual.includes(userId)) return "prompt";
+  if (ids.some((id) => manual.includes(id))) return "prompt";
   const anyWhitelist = auto.length > 0 || manual.length > 0;
   return anyWhitelist ? "drop" : "prompt";
+}
+
+export type MessageAdmission =
+  | { allowed: true; disposition: PublishDisposition }
+  | { allowed: false; reason: string };
+
+/**
+ * Decide whether a Slack message event should be admitted into the publish
+ * pipeline, and if so how it should be handled. `bot_message` events are only
+ * admitted when the bot user is in a publish whitelist (auto or manual), and
+ * events authored by the indigest bot itself are always rejected so an
+ * `*` auto-approve list can never create a forward loop.
+ */
+export function resolveMessageAdmission(opts: {
+  subtype?: string;
+  user?: string;
+  botId?: string;
+  selfUserId?: string;
+  selfBotId?: string;
+  autoApproveUsers: string[];
+  manualUsers: string[];
+  /** "shortcut" channels never admit ambient messages; publishing only happens via the message shortcut. */
+  triggerMode: "message" | "shortcut";
+}): MessageAdmission {
+  if (opts.triggerMode === "shortcut") {
+    return { allowed: false, reason: "shortcut-only" };
+  }
+  if (opts.selfUserId && opts.user === opts.selfUserId) {
+    return { allowed: false, reason: "self-authored" };
+  }
+  if (opts.selfBotId && opts.botId && opts.botId === opts.selfBotId) {
+    return { allowed: false, reason: "self-authored" };
+  }
+  if (opts.subtype && opts.subtype !== "bot_message") {
+    return { allowed: false, reason: `unhandled subtype ${opts.subtype}` };
+  }
+  if (opts.subtype === "bot_message") {
+    // Bot events often carry only a bot_id and no user field, so a whitelist
+    // entry may name either the bot's Slack user ID or its bot ID.
+    const whitelisted =
+      opts.autoApproveUsers.includes("*") ||
+      [opts.user, opts.botId].some(
+        (id) =>
+          !!id &&
+          (opts.autoApproveUsers.includes(id) || opts.manualUsers.includes(id)),
+      );
+    if (!whitelisted) {
+      return { allowed: false, reason: "unwhitelisted bot" };
+    }
+  }
+  return {
+    allowed: true,
+    disposition: resolvePublishDisposition(
+      { autoApproveUsers: opts.autoApproveUsers, manualUsers: opts.manualUsers },
+      [opts.user, opts.botId],
+    ),
+  };
 }
 
 export function canEditBotMessage(
@@ -1728,6 +1790,7 @@ app.post("/events", async (c) => {
           webhookUrl: "",
           autoApproveUsers: [],
           manualUsers: [],
+          triggerMode: "message",
           approvedPosters: [],
           accessPermUsers: ["*"],
           trackReplies: false,
@@ -1757,9 +1820,29 @@ app.post("/events", async (c) => {
         return;
       }
 
-      if (ev.type === "message" && !ev.subtype && !ev.thread_ts) {
+      if (ev.type === "message" && !ev.thread_ts) {
         const ch = await q.getChannel(db, ev.channel);
         if (!ch || !ch.enabled) return;
+
+        let selfUserId: string | undefined;
+        let selfBotId: string | undefined;
+        if (ev.subtype === "bot_message") {
+          const auth = await slack.auth.test();
+          selfUserId = auth.user_id;
+          selfBotId = (auth as any).bot_id;
+        }
+        const admission = resolveMessageAdmission({
+          subtype: ev.subtype,
+          user: ev.user,
+          botId: ev.bot_id,
+          selfUserId,
+          selfBotId,
+          autoApproveUsers: ch.autoApproveUsers,
+          manualUsers: ch.manualUsers,
+          triggerMode: ch.triggerMode,
+        });
+        if (!admission.allowed) return;
+
         await syncChannelName(db, slack, ch);
         logMessageContentProbe("incoming", ev);
 
@@ -1778,7 +1861,7 @@ app.post("/events", async (c) => {
           );
         }
 
-        const disposition = resolvePublishDisposition(ch, ev.user);
+        const disposition = admission.disposition;
 
         if (disposition === "auto") {
           console.log(`Auto-approving message from ${ev.user} in #${ch.name}`);
@@ -3297,6 +3380,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           webhookUrl: "",
           autoApproveUsers: [],
           manualUsers: [],
+          triggerMode: "message",
           approvedPosters: [],
           accessPermUsers: ["*"],
           trackReplies: false,
@@ -3544,9 +3628,43 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
             return;
           }
 
+          if (subcmd === "trigger") {
+            if (!(await targetManager())) {
+              await respond(
+                "Only the channel creator can change the trigger mode.",
+              );
+              return;
+            }
+            const mode = (arg || "").trim().toLowerCase();
+            if (mode !== "message" && mode !== "shortcut") {
+              await respond(
+                "Usage: \`/in pub trigger message\` | \`/in pub trigger shortcut\`",
+              );
+              return;
+            }
+            ch.enabled = true;
+            ch.triggerMode = mode;
+            await q.upsertChannel(db, ch);
+            const label =
+              targetChannelId === sourceChannelId
+                ? "this channel"
+                : `#${ch.name}`;
+            await logCommand(`pub trigger ${mode}`, db);
+            if (mode === "shortcut") {
+              await respond(
+                `📰 Trigger mode set to shortcut for ${label}. Messages are only published via the "Add to feed" message shortcut, never automatically.`,
+              );
+            } else {
+              await respond(
+                `📰 Trigger mode set to message for ${label}. Every message is handled per the auto/manual approval settings.`,
+              );
+            }
+            return;
+          }
+
           if (subcmd) {
             await respond(
-              "Usage: \`/in pub\` | \`/in pub #channel\` | \`/in pub auto @user\` | \`/in pub manual [@user]\` | \`/in pub link\` | \`/in pub replies\` | \`/in pub off\`",
+              "Usage: \`/in pub\` | \`/in pub #channel\` | \`/in pub auto @user\` | \`/in pub manual [@user]\` | \`/in pub link\` | \`/in pub replies\` | \`/in pub trigger message|shortcut\` | \`/in pub off\`",
             );
             return;
           }
@@ -3736,6 +3854,9 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           if (ch.enabled) {
             let msg = `📰 indigest pub'd for ${chName}\nRSS: ${baseUrl}/feed/${targetChannelId}\nJSON: ${baseUrl}/feed/${targetChannelId}.json`;
             if (ch.linkMode) msg += `\nMode: link`;
+            if (ch.triggerMode === "shortcut") {
+              msg += `\nTrigger: shortcut only (no auto/manual publishing from messages)`;
+            }
             if (ch.webhookUrl) msg += `\nWebhook: ${ch.webhookUrl}`;
             if (ch.autoApproveUsers.length > 0) {
               const autoLabel = ch.autoApproveUsers.includes("*")
@@ -4302,6 +4423,7 @@ app.get("/api/graph", async (c) => {
         autoApproveUsers: ch.autoApproveUsers?.join(", ") || "",
         enabled: ch.enabled,
         linkMode: ch.linkMode,
+        triggerMode: ch.triggerMode,
         createdAt: ch.createdAt,
       },
     });

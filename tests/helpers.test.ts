@@ -9,6 +9,7 @@ import {
   isMessageEmpty,
   isSlackPermalink,
   metadataRequirementSatisfied,
+  resolveMessageAdmission,
   resolvePublishDisposition,
   resolveSubProfileValue,
   shouldForward,
@@ -23,7 +24,7 @@ import {
 
 const channel = (accessPermUsers = ["*"]) => ({
   id: "C1", name: "feed", teamId: "T1", enabled: true, linkMode: false,
-  webhookUrl: "", autoApproveUsers: [], manualUsers: [], approvedPosters: [], accessPermUsers,
+  webhookUrl: "", autoApproveUsers: [], manualUsers: [], triggerMode: "message" as const, approvedPosters: [], accessPermUsers,
   trackReplies: false, metadataSchema: "", metadataRequired: false, properties: "", createdAt: "",
 });
 const msg = (text: string) => ({ slackTs: "1.1", channelId: "C1", userId: "U1", userName: "u", text, timestamp: new Date().toISOString(), metadata: {} });
@@ -189,6 +190,101 @@ describe("pure helpers", () => {
         expect(["auto", "prompt", "drop"]).toContain(result);
         if (userId === "U3") expect(result).toBe("drop");
       }
+    });
+    test("accepts multiple candidate identities and matches on any of them", () => {
+      expect(resolvePublishDisposition(ch(["B1"]), [undefined, "B1"])).toBe("auto");
+      expect(resolvePublishDisposition(ch([], ["B1"]), ["U1", "B1"])).toBe("prompt");
+      expect(resolvePublishDisposition(ch(["U1"]), [undefined, "B1"])).toBe("drop");
+    });
+  });
+  describe("resolveMessageAdmission", () => {
+    const admit = (
+      overrides: Partial<Parameters<typeof resolveMessageAdmission>[0]>,
+    ) =>
+      resolveMessageAdmission({
+        subtype: undefined,
+        user: "U1",
+        botId: undefined,
+        selfUserId: "SELF",
+        selfBotId: "BSELF",
+        autoApproveUsers: [],
+        manualUsers: [],
+        triggerMode: "message",
+        ...overrides,
+      });
+
+    test("rejects every message when trigger mode is shortcut, even for a whitelisted user", () => {
+      expect(
+        admit({ triggerMode: "shortcut", autoApproveUsers: ["*"] }),
+      ).toEqual({ allowed: false, reason: "shortcut-only" });
+    });
+
+    test("admits a normal human message and applies disposition", () => {
+      const human = admit({});
+      expect(human).toEqual({ allowed: true, disposition: "prompt" });
+      expect(
+        admit({ autoApproveUsers: ["*"], user: "U9" }),
+      ).toEqual({ allowed: true, disposition: "auto" });
+      expect(
+        admit({ autoApproveUsers: ["U1"], user: "U2" }),
+      ).toEqual({ allowed: true, disposition: "drop" });
+    });
+    test("admits a whitelisted bot message with the matching disposition", () => {
+      const manualBot = admit({ subtype: "bot_message", user: "UBOT", manualUsers: ["UBOT"] });
+      expect(manualBot).toEqual({ allowed: true, disposition: "prompt" });
+      const autoBot = admit({ subtype: "bot_message", user: "UBOT", autoApproveUsers: ["UBOT"] });
+      expect(autoBot).toEqual({ allowed: true, disposition: "auto" });
+      expect(
+        admit({ subtype: "bot_message", user: "UBOT", autoApproveUsers: ["*"] }),
+      ).toEqual({ allowed: true, disposition: "auto" });
+    });
+    test("drops bot messages that are not whitelisted", () => {
+      const result = admit({ subtype: "bot_message", user: "UBOT" });
+      expect(result).toEqual({ allowed: false, reason: "unwhitelisted bot" });
+      expect(
+        admit({ subtype: "bot_message", user: "UBOT", manualUsers: ["UOTHER"], autoApproveUsers: ["UOTHER"] }),
+      ).toEqual({ allowed: false, reason: "unwhitelisted bot" });
+    });
+    test("drops a bot message with no user identity that can't match a whitelist", () => {
+      const result = admit({ subtype: "bot_message", user: undefined, botId: "B1", manualUsers: ["UBOT"] });
+      expect(result).toEqual({ allowed: false, reason: "unwhitelisted bot" });
+    });
+    test("admits a bot message with no user field when its bot ID is whitelisted", () => {
+      const manual = admit({ subtype: "bot_message", user: undefined, botId: "B1", manualUsers: ["B1"] });
+      expect(manual).toEqual({ allowed: true, disposition: "prompt" });
+      const auto = admit({ subtype: "bot_message", user: undefined, botId: "B1", autoApproveUsers: ["B1"] });
+      expect(auto).toEqual({ allowed: true, disposition: "auto" });
+    });
+    test("never admits the indigest bot's own messages, even with * auto-approve", () => {
+      expect(admit({ subtype: "bot_message", user: "SELF", autoApproveUsers: ["*"] }))
+        .toEqual({ allowed: false, reason: "self-authored" });
+      expect(admit({ subtype: "bot_message", botId: "BSELF", user: undefined, autoApproveUsers: ["*"] }))
+        .toEqual({ allowed: false, reason: "self-authored" });
+    });
+    test("self check runs before the whitelist, so self is never published", () => {
+      expect(admit({ subtype: "bot_message", user: "SELF", manualUsers: ["SELF"], autoApproveUsers: ["SELF"] }))
+        .toEqual({ allowed: false, reason: "self-authored" });
+      expect(admit({ user: "SELF", autoApproveUsers: ["*"] }))
+        .toEqual({ allowed: false, reason: "self-authored" });
+    });
+    test("drops every subtype that is not a plain message or bot_message", () => {
+      for (const subtype of ["channel_join", "channel_leave", "group_join", "thread_broadcast", "file_share"]) {
+        expect(admit({ subtype })).toEqual({ allowed: false, reason: `unhandled subtype ${subtype}` });
+      }
+    });
+    test("disposition for admitted bot events matches the disposition as a human", () => {
+      const auto = ["UA"];
+      const manual = ["UM"];
+      for (const uid of ["UA", "UM"]) {
+        const asHuman = admit({ autoApproveUsers: auto, manualUsers: manual, user: uid, subtype: undefined });
+        const asBot = admit({ autoApproveUsers: auto, manualUsers: manual, user: uid, subtype: "bot_message", botId: "B_" + uid });
+        expect(asHuman).toEqual({ allowed: true, disposition: asHuman.disposition });
+        expect(asBot).toEqual(asHuman);
+      }
+      expect(admit({ autoApproveUsers: auto, manualUsers: manual, user: "UX", subtype: undefined }))
+        .toEqual({ allowed: true, disposition: "drop" });
+      expect(admit({ autoApproveUsers: auto, manualUsers: manual, user: "UX", subtype: "bot_message" }))
+        .toEqual({ allowed: false, reason: "unwhitelisted bot" });
     });
   });
 });

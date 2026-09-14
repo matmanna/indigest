@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { canAccessFeed, canApproveMessage, canEditBotMessage, upsertMetadataBlock } from "../src/app";
 import { canCreateApiKeyForChannel } from "../src/api/routers/apiKeys";
 
-const feed = (users: string[]) => ({ id: "C1", name: "", teamId: "", enabled: true, linkMode: false, webhookUrl: "", autoApproveUsers: [], manualUsers: [], approvedPosters: [], accessPermUsers: users, trackReplies: false, metadataSchema: "", metadataRequired: false, properties: "", createdAt: "" });
+const feed = (users: string[]) => ({ id: "C1", name: "", teamId: "", enabled: true, linkMode: false, webhookUrl: "", autoApproveUsers: [], manualUsers: [], triggerMode: "message" as const, approvedPosters: [], accessPermUsers: users, trackReplies: false, metadataSchema: "", metadataRequired: false, properties: "", createdAt: "" });
 
 describe("feed access invariants", () => {
   test("wildcard always allows", () => expect(canAccessFeed(feed(["*"]), null)).toBe(true));
