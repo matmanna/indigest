@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { timingSafeEqual } from "node:crypto";
 import { WebClient } from "@slack/web-api";
 import { getAuth } from "./lib/auth";
 import { Feed } from "feed";
@@ -111,13 +112,16 @@ async function isChannelManager(
   return false;
 }
 
-async function verifySignature(
+export async function verifySignature(
   request: Request,
   body: string,
   signingSecret: string,
 ): Promise<boolean> {
+  if (!signingSecret) return false;
   const ts = request.headers.get("X-Slack-Request-Timestamp") || "";
   const sig = request.headers.get("X-Slack-Signature") || "";
+  const age = Math.abs(Date.now() / 1000 - Number(ts));
+  if (!Number.isFinite(age) || age > 60 * 5) return false;
   const baseString = `v0:${ts}:${body}`;
   const encoder = new TextEncoder();
   try {
@@ -139,10 +143,7 @@ async function verifySignature(
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
     if (computed.length !== sig.length) return false;
-    return crypto.subtle.timingSafeEqual(
-      encoder.encode(computed),
-      encoder.encode(sig),
-    );
+    return timingSafeEqual(encoder.encode(computed), encoder.encode(sig));
   } catch {
     return false;
   }
@@ -206,12 +207,24 @@ async function fireWebhook(ch: StoreChannel, msg: StoreMessage) {
   } catch { }
 }
 
+export function isSlackFileUrl(url: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(url);
+    const host = hostname.toLowerCase();
+    return (
+      protocol === "https:" && (host === "slack.com" || host.endsWith(".slack.com"))
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function uploadToCDN(
   slackUrl: string,
   botToken: string,
   cdnKey: string,
 ): Promise<string> {
-  if (!cdnKey) return slackUrl;
+  if (!cdnKey || !isSlackFileUrl(slackUrl)) return slackUrl;
   const resp = await fetch(slackUrl, {
     headers: { Authorization: `Bearer ${botToken}` },
   });
@@ -1700,6 +1713,9 @@ app.post("/events", async (c) => {
 app.post("/interactions", async (c) => {
   const env = c.env;
   const body = await c.req.text();
+  if (!(await verifySignature(c.req.raw, body, env.SLACK_SIGNING_SECRET))) {
+    return c.json({ error: "invalid signature" }, 401);
+  }
   const formData = new URLSearchParams(body);
   const payloadStr = formData.get("payload");
   if (!payloadStr) return c.json({ error: "missing payload" }, 400);
@@ -2773,6 +2789,9 @@ app.post("/interactions", async (c) => {
 const slackSlashCommand = async (c: any) => {
   const env = c.env;
   const body = await c.req.text();
+  if (!(await verifySignature(c.req.raw, body, env.SLACK_SIGNING_SECRET))) {
+    return c.json({ error: "invalid signature" }, 401);
+  }
   const form = new URLSearchParams(body);
 
   const sourceChannelId = form.get("channel_id") || "";
