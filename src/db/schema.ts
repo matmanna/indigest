@@ -7,6 +7,7 @@ import {
   timestamp,
   uniqueIndex,
   index,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
@@ -100,6 +101,13 @@ export const apiKeys = pgTable("api_keys", {
   keyPrefix: text("key_prefix").notNull().unique(),
   secretHash: text("secret_hash").notNull(),
   lastUsedAt: timestamp("last_used_at"),
+  revokedAt: timestamp("revoked_at"),
+  // Delegation: a key with canDelegate may mint child keys whose channel scope
+  // is a subset of its own. Children act with the parent's access, record the
+  // end user they were issued to in subject, and die with the parent.
+  canDelegate: boolean("can_delegate").default(false).notNull(),
+  parentId: integer("parent_id").references((): AnyPgColumn => apiKeys.id),
+  subject: text("subject"),
   // expiresAt: timestamp("expires_at", { mode: "date" }),
 });
 

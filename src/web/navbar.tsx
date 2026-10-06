@@ -56,7 +56,7 @@ export function Navbar({ active }: { active: string }) {
               your keys
             </a>
             <button class="button" onClick={() => authClient.signOut()}>
-              Log out ({session.user.slackId})
+              Log out ({session.user.name || session.user.slackId})
             </button>
           </div>
         ) : (

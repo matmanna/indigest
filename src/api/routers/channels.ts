@@ -23,6 +23,7 @@ const channelSchema = z.object({
   webhookUrl: z.string(),
   autoApproveUsers: z.array(z.string()),
   manualUsers: z.array(z.string()),
+  triggerMode: z.enum(["message", "shortcut"]),
   approvedPosters: z.array(z.string()),
   accessPermUsers: z.array(z.string()),
   trackReplies: z.boolean(),

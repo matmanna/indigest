@@ -363,6 +363,21 @@ export async function getMessageBySlackTs(
   return rowToMessage(rows[0]!);
 }
 
+/** Oldest stored message for a channel, by timestamp - the resume point for backfilling further back in history. */
+export async function getOldestMessage(
+  db: DB,
+  channelId: string,
+): Promise<Message | null> {
+  const rows = await db
+    .select()
+    .from(schema.messages)
+    .where(eq(schema.messages.channelId, channelId))
+    .orderBy(sql`timestamp ASC`)
+    .limit(1);
+  if (rows.length === 0) return null;
+  return rowToMessage(rows[0]!);
+}
+
 export async function getRecentMessages(
   db: DB,
   channelId: string,

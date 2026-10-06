@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   canAccessFeed,
+  chunkLongText,
   findExistingForward,
   hasProvidedMetadata,
   hasChannelPing,
@@ -195,6 +196,45 @@ describe("pure helpers", () => {
       expect(resolvePublishDisposition(ch(["B1"]), [undefined, "B1"])).toBe("auto");
       expect(resolvePublishDisposition(ch([], ["B1"]), ["U1", "B1"])).toBe("prompt");
       expect(resolvePublishDisposition(ch(["U1"]), [undefined, "B1"])).toBe("drop");
+    });
+  });
+  describe("chunkLongText", () => {
+    test("returns short text unchanged as a single chunk", () => {
+      expect(chunkLongText("hello world")).toEqual(["hello world"]);
+      expect(chunkLongText("")).toEqual([]);
+    });
+    test("chunks long text so every chunk fits the Slack section block limit", () => {
+      const long = "x".repeat(9000);
+      const chunks = chunkLongText(long);
+      expect(chunks.length).toBe(3);
+      for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(3000);
+      expect(chunks.join("")).toBe(long);
+    });
+    test("splits on newline boundaries without losing or clipping lines", () => {
+      const body = "line one\n".repeat(400);
+      const chunks = chunkLongText(body);
+      for (const chunk of chunks) {
+        expect(chunk.length).toBeGreaterThan(0);
+        expect(chunk.length).toBeLessThanOrEqual(3000);
+      }
+      expect(chunks.join("")).toBe(body);
+    });
+    test("hard-splits an overlong single line rather than losing content", () => {
+      const body = "a".repeat(3200);
+      const chunks = chunkLongText(body);
+      expect(chunks.length).toBe(2);
+      expect(chunks[0]).toBe("a".repeat(3000));
+      expect(chunks[1]).toBe("a".repeat(200));
+    });
+    test("never emits an empty chunk while collapsing boundary newlines", () => {
+      const body = ("word\n".repeat(1200)).trimEnd();
+      const chunks = chunkLongText(body);
+      for (const chunk of chunks) expect(chunk.length).toBeGreaterThan(0);
+      expect(chunks.join("")).toBe(body);
+    });
+    test("reassembles the full text losslessly", () => {
+      const body = Array.from({ length: 50 }, (_, i) => `line ${i} ` + "y".repeat(80)).join("\n");
+      expect(chunkLongText(body).join("")).toBe(body);
     });
   });
   describe("resolveMessageAdmission", () => {

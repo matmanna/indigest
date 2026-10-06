@@ -4,6 +4,10 @@
   --border: #222;
   --text: #ccc;
   --text-muted: #666;
+  --accent: #5b9bd5;
+  --slack-pill-bg: rgba(91, 155, 213, 0.14);
+  --slack-pill-text: #7cc0ff;
+  --danger: #c15a5c;
 }
 
 * {
@@ -413,4 +417,259 @@ body {
   translate: -70px 20px;
   animation: rapid-zoom 1800ms ease-in-out infinite;
   transform-origin: center;
+}
+
+/* Shared */
+.muted {
+  color: var(--text-muted);
+}
+
+/* Keys page */
+.keys-page {
+  padding: 0.75rem 1rem;
+  max-width: 720px;
+}
+.keys-toolbar {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.keys-toolbar .button {
+  margin: 0;
+}
+.keys-header h1 {
+  font-size: 15px;
+  margin-bottom: 0.25rem;
+}
+.keys-header p {
+  margin: 0;
+}
+.key-created-card {
+  border-color: #3d6b3f;
+  position: relative;
+}
+.key-created-card .api-key-row {
+  justify-content: space-between;
+}
+.key-created-card h3 {
+  font-size: 12px;
+}
+.key-secret {
+  user-select: all;
+  word-break: break-all;
+  background: #0f0f0f;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.35rem 0.5rem;
+  display: block;
+}
+.keys-list h2 {
+  font-size: 12px;
+  margin-bottom: 0.5rem;
+}
+.keys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.api-key-card {
+  gap: 0.4rem;
+}
+.api-key-card.revoked {
+  opacity: 0.65;
+}
+.api-key-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.api-key-row .button {
+  margin: 0;
+}
+.api-key-title {
+  overflow-wrap: anywhere;
+}
+.key-prefix {
+  background: #0f0f0f;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+  color: #999;
+}
+.api-key-meta {
+  font-size: 10px;
+}
+.api-key-channels {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.revoked-keys summary {
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+}
+.revoked-keys > .column {
+  margin-top: 0.5rem;
+}
+.empty-state-card {
+  align-items: center;
+  text-align: center;
+}
+.empty-state-card .button {
+  margin: 0;
+}
+
+/* Buttons */
+.button-outline {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.button-outline:hover {
+  border-color: #444;
+  background: #1a1a1a;
+}
+.button-outline-red {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid #4a2b2c;
+}
+.button-outline-red:hover {
+  background: rgba(193, 90, 92, 0.12);
+  border-color: var(--danger);
+}
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Slack channel pill (linked, real display) */
+.slack-pill {
+  display: inline-flex;
+  align-items: center;
+  background: var(--slack-pill-bg);
+  color: var(--slack-pill-text);
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+  font-size: 10px;
+  font-weight: 600;
+  text-decoration: none;
+  line-height: 1.4;
+}
+.slack-pill:hover {
+  text-decoration: underline;
+  background: rgba(91, 155, 213, 0.22);
+}
+
+/* Channel picker (toggle chips, create-key modal) */
+.channel-picker {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.channel-chip {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.1rem 0.45rem;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.channel-chip:hover {
+  border-color: #444;
+  color: var(--text);
+}
+.channel-chip.selected {
+  background: var(--slack-pill-bg);
+  color: var(--slack-pill-text);
+  border-color: rgba(91, 155, 213, 0.4);
+}
+
+/* Form fields */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.field-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+.field-label .normal {
+  text-transform: none;
+  letter-spacing: normal;
+}
+.checkbox-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+.checkbox-field input {
+  margin-top: 0.2rem;
+}
+
+/* Modal */
+dialog.modal {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0;
+  width: min(420px, calc(100vw - 2rem));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+dialog.modal::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1rem;
+}
+.modal-header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-header h2 {
+  font-size: 13px;
+}
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+}
+.modal-close:hover {
+  color: var(--text);
+}
+.modal-actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+.modal-actions .button {
+  margin: 0;
 }

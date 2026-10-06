@@ -164,6 +164,30 @@ query parameters: `limit` (max 200, default 50), `offset` (default 0).
 
 interactive API docs can be found at [https://indigest.matmanna.dev/docs](https://indigest.matmanna.dev/docs).
 
+## backfilling history
+
+```bash
+bun run backfill '#channel' ['@user'] ['YYYY-MM-DD'] ['YYYY-MM-DD']
+```
+
+walks a channel's history backward with `conversations.history`, storing
+messages into the `messages` table. resumes from the oldest message already
+stored for the channel and goes back to the start of the channel, unless
+bounded by the optional dates:
+
+- one date given -> treated as the start date (don't go older than this day)
+- two dates given -> `start end`; fetching begins from the end of the end
+  date instead of resuming from the oldest stored message, useful for
+  backfilling a specific historical window
+- `@user` (name or raw user/bot ID) -> only store messages from that author
+
+administrative subtypes (joins/leaves/topic changes/etc.) are skipped; if
+the channel has reply tracking on, thread replies are backfilled too. safe
+to interrupt and re-run. can take a long time for a large channel/range -
+that's expected, and it relies on `@slack/web-api`'s built-in handling of
+Slack's rate limits (with a small delay between pages, tunable via
+`BACKFILL_DELAY_MS`).
+
 ## development
 
 use either docker or wrangler dev
@@ -173,7 +197,7 @@ use either docker or wrangler dev
 docker compose run app bun run db:studio
 
 # Cloudflare Worker
-npx wrangler dev        # local dev
+bun run dev             # build + local dev
 npx wrangler deploy     # deploy to Cloudflare
 ```
 

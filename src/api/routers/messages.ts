@@ -7,6 +7,22 @@ import {
   getMessageCount as dbGetMessageCount,
   getMessageBySlackTs as dbGetMessageBySlackTs,
 } from "../../db/queries";
+import type { Channel } from "../../db/queries";
+import { canAccessFeed, resolveContextFeedIdentity } from "../../lib/access";
+import type { ORPCContext } from "../context";
+
+async function assertChannelAccess(context: ORPCContext, ch: Channel) {
+  const identity = await resolveContextFeedIdentity(
+    context.db,
+    context.session,
+    context.apiKey,
+  );
+  if (!canAccessFeed(ch, identity)) {
+    throw new ORPCError("FORBIDDEN", {
+      message: "You don't have access to this channel",
+    });
+  }
+}
 
 export const listMessages = authOrApiKeyProcedure
   .route({ method: "GET", path: "/messages" })
@@ -27,6 +43,7 @@ export const listMessages = authOrApiKeyProcedure
     const ch = await dbGetChannel(context.db, channel);
     if (!ch || !ch.enabled)
       throw new ORPCError("Channel not found or not enabled");
+    await assertChannelAccess(context, ch);
 
     const total = await dbGetMessageCount(context.db, channel, {
       after,
@@ -65,6 +82,11 @@ export const getMessage = authOrApiKeyProcedure
     }),
   )
   .handler(async ({ input, context }) => {
+    const ch = await dbGetChannel(context.db, input.channel);
+    if (!ch || !ch.enabled)
+      throw new ORPCError("Channel not found or not enabled");
+    await assertChannelAccess(context, ch);
+
     const msg = await dbGetMessageBySlackTs(
       context.db,
       input.channel,

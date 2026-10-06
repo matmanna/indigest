@@ -46,12 +46,53 @@ describe("Slack text sanitization", () => {
         elements: [{
           type: "rich_text_section",
           elements: [
-            { type: "text", text: "Rich text content" },
+            { type: "text", text: "Rich text content " },
             { type: "emoji", name: "eyes" },
           ],
         }],
       }],
-    })).toBe("Rich text content\n:eyes:");
+    })).toBe("Rich text content :eyes:");
+  });
+
+  test("keeps rich_text inline elements on one line", () => {
+    expect(extractMessageText({
+      blocks: [{
+        type: "rich_text",
+        elements: [{
+          type: "rich_text_section",
+          elements: [
+            { type: "text", text: "Listen for a " },
+            { type: "link", url: "https://example.com" },
+            { type: "text", text: " and watch " },
+            { type: "emoji", name: "eyes" },
+            { type: "channel", channel_id: "C123" },
+          ],
+        }],
+      }],
+    })).toBe("Listen for a https://example.com and watch :eyes:<#C123>");
+  });
+
+  test("rich_text list items and line breaks become newlines", () => {
+    expect(extractMessageText({
+      blocks: [{
+        type: "rich_text",
+        elements: [{
+          type: "rich_text_list",
+          style: "bullet",
+          elements: [
+            { type: "rich_text_section", elements: [{ type: "text", text: "one" }] },
+            { type: "rich_text_section", elements: [{ type: "text", text: "two" }] },
+          ],
+        }, {
+          type: "rich_text_section",
+          elements: [
+            { type: "text", text: "a" },
+            { type: "line_break" },
+            { type: "text", text: "b" },
+          ],
+        }],
+      }],
+    })).toBe("one\ntwo\na\nb");
   });
 
   test("attributes shared content to the original author", () => {

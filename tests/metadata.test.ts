@@ -28,6 +28,19 @@ describe("optional metadata fields", () => {
     })).toBe(JSON.stringify({ title: "Hello", tags: ["news"], due: "2026-08-13" }));
   });
 
+  test("a single select keeps its chosen value", () => {
+    const selectSchema = {
+      title: "Details",
+      fields: [{ action_id: "column", label: "Column", type: "static_select" }],
+    };
+    expect(extractMetadataFromView(selectSchema, {
+      field_column: { column: { selected_option: { value: "news" } } },
+    })).toBe(JSON.stringify({ column: "news" }));
+    expect(extractMetadataFromView(selectSchema, {
+      field_column: { column: { selected_option: null } },
+    })).toBe("{}");
+  });
+
   test("only set values are eligible for forwarded metadata", () => {
     expect(isMetadataValueSet(undefined)).toBe(false);
     expect(isMetadataValueSet(null)).toBe(false);

@@ -5,6 +5,8 @@
   "scripts": {
     "start": "bun run bun.ts",
     "build": "vite build",
+    "dev": "vite build && wrangler dev",
+    "backfill": "bun run src/cli/backfill.ts",
     "deploy": "vite build && wrangler deploy",
     "test": "bun test",
     "test:pg": "TEST_DATABASE_URL=postgres://indigest:indigest@localhost:5433/indigest_test bun test",
