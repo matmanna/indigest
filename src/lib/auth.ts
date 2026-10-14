@@ -4,6 +4,7 @@ import { genericOAuth } from "better-auth/plugins";
 import { getDb } from "../db";
 import * as schema from "../db/schema";
 import { eq } from "drizzle-orm";
+import { auditActions, recordAudit } from "./audit";
 
 export function getAuth(databaseUrl: string, env?: Record<string, string>) {
   const db = getDb(databaseUrl);
@@ -40,6 +41,18 @@ export function getAuth(databaseUrl: string, env?: Record<string, string>) {
       }),
     ],
     databaseHooks: {
+      session: {
+        create: {
+          after: async (session) => {
+            await auditSession(databaseUrl, auditActions.authSignIn, session);
+          },
+        },
+        delete: {
+          after: async (session) => {
+            await auditSession(databaseUrl, auditActions.authSignOut, session);
+          },
+        },
+      },
       user: {
         create: {
           after: async (user) => {
@@ -60,6 +73,40 @@ export function getAuth(databaseUrl: string, env?: Record<string, string>) {
       "https://indigest.matmanna.dev",
     ],
   });
+}
+
+/**
+ * Audit a session starting or ending. Runs inside better-auth's hooks, so it
+ * must never throw: a database hiccup here would fail the sign-in itself.
+ */
+async function auditSession(
+  databaseUrl: string,
+  def: { action: string },
+  session: { userId: string; ipAddress?: string | null; userAgent?: string | null },
+): Promise<void> {
+  try {
+    const db = getDb(databaseUrl);
+    const [user] = await db
+      .select({ name: schema.authUser.name, slackId: schema.authUser.slackId })
+      .from(schema.authUser)
+      .where(eq(schema.authUser.id, session.userId));
+    await recordAudit(
+      db,
+      {
+        action: def.action,
+        actor: { type: "user", id: session.userId, displayName: user?.name },
+        target: { type: "user", id: session.userId },
+      },
+      {
+        source: "auth",
+        actorSlackId: user?.slackId ?? null,
+        ip: session.ipAddress,
+        userAgent: session.userAgent,
+      },
+    );
+  } catch (err: any) {
+    console.error(`audit ${def.action} failed:`, err?.message || err);
+  }
 }
 
 /**

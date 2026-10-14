@@ -7,6 +7,7 @@ import {
   timestamp,
   uniqueIndex,
   index,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
@@ -38,6 +39,9 @@ export const messages = pgTable(
     userId: text("user_id").notNull().default(""),
     userName: text("user_name").notNull().default(""),
     text: text("text").notNull().default(""),
+    // The same text as Slack mrkdwn, formatting kept. Null for messages
+    // stored before it existed.
+    formattedText: text("formatted_text"),
     threadTs: text("thread_ts"),
     timestamp: text("timestamp").notNull(),
     metadata: text("metadata").notNull().default("{}"),
@@ -100,6 +104,13 @@ export const apiKeys = pgTable("api_keys", {
   keyPrefix: text("key_prefix").notNull().unique(),
   secretHash: text("secret_hash").notNull(),
   lastUsedAt: timestamp("last_used_at"),
+  revokedAt: timestamp("revoked_at"),
+  // Delegation: a key with canDelegate may mint child keys whose channel scope
+  // is a subset of its own. Children act with the parent's access, record the
+  // end user they were issued to in subject, and die with the parent.
+  canDelegate: boolean("can_delegate").default(false).notNull(),
+  parentId: integer("parent_id").references((): AnyPgColumn => apiKeys.id),
+  subject: text("subject"),
   // expiresAt: timestamp("expires_at", { mode: "date" }),
 });
 
@@ -108,6 +119,39 @@ export const apiKeyChannels = pgTable("api_key_channels", {
   keyId: integer("key_id").references(() => apiKeys.id),
   channelId: text("channel_id").references(() => channels.id),
 });
+
+// Append-only audit trail of config and auth changes. Each row's hash covers
+// the previous row's hash, so editing or deleting a row breaks the chain.
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    action: text("action").notNull(),
+    outcome: text("outcome").notNull(),
+    severity: text("severity").notNull().default("low"),
+    source: text("source").notNull(),
+    actorType: text("actor_type").notNull(),
+    actorId: text("actor_id").notNull(),
+    actorName: text("actor_name"),
+    actorSlackId: text("actor_slack_id"),
+    targetType: text("target_type"),
+    targetId: text("target_id"),
+    targetName: text("target_name"),
+    reason: text("reason"),
+    changes: jsonb("changes"),
+    context: jsonb("context"),
+    prevHash: text("prev_hash"),
+    hash: text("hash").notNull(),
+  },
+  (t) => ({
+    createdIdx: index("idx_audit_log_created").on(t.createdAt.desc()),
+    targetIdx: index("idx_audit_log_target").on(t.targetType, t.targetId),
+    actionIdx: index("idx_audit_log_action").on(t.action),
+  }),
+);
 
 // --- Better Auth tables ---
 

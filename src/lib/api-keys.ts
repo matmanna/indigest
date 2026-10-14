@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { getDb } from "../db";
 import * as schema from "../db/schema";
 import { ORPCError } from "@orpc/server";
@@ -49,6 +50,16 @@ export interface ApiKeyIdentity {
   name: string;
   owner: string | null;
   channelIds: string[];
+  canDelegate: boolean;
+  parentId: number | null;
+  subject: string | null;
+}
+
+export function isRevoked(key: {
+  revokedAt: Date | null;
+  revokedBy: string | null;
+}): boolean {
+  return key.revokedAt !== null || key.revokedBy !== null;
 }
 
 export async function createApiKeyContext({
@@ -65,23 +76,34 @@ export async function createApiKeyContext({
     });
   }
 
-  const token = authHeader.slice(7);
-  if (!token.startsWith(KEY_PREFIX)) {
-    throw new ORPCError("UNAUTHORIZED", {
-      message: "Invalid API key format",
-    });
-  }
+  return authenticateApiKey(authHeader.slice(7), databaseUrl);
+}
+
+export interface ApiKeyLookup {
+  identity: ApiKeyIdentity;
+  revoked: boolean;
+  // When the key (or its parent) was revoked; null if unknown, as for keys
+  // revoked before revokedAt existed.
+  revokedAt: Date | null;
+}
+
+/**
+ * Find the key a full token belongs to, revoked or not. Returns undefined when
+ * the token matches no key.
+ */
+export async function lookupApiKey(
+  token: string,
+  databaseUrl: string,
+): Promise<ApiKeyLookup | undefined> {
+  if (!token.startsWith(KEY_PREFIX)) return undefined;
 
   const rawKey = token.slice(KEY_PREFIX.length);
-  if (rawKey.length < KEY_PREFIX_LENGTH) {
-    throw new ORPCError("UNAUTHORIZED", {
-      message: "Invalid API key",
-    });
-  }
+  if (rawKey.length < KEY_PREFIX_LENGTH) return undefined;
 
   const keyPrefix = rawKey.slice(0, KEY_PREFIX_LENGTH);
 
   const db = getDb(databaseUrl);
+  const parentKey = alias(schema.apiKeys, "parent_key");
 
   const rows = await db
     .select({
@@ -90,43 +112,115 @@ export async function createApiKeyContext({
       name: schema.apiKeys.name,
       owner: schema.apiKeys.owner,
       secretHash: schema.apiKeys.secretHash,
-      lastUsedAt: schema.apiKeys.lastUsedAt,
+      revokedAt: schema.apiKeys.revokedAt,
+      revokedBy: schema.apiKeys.revokedBy,
+      canDelegate: schema.apiKeys.canDelegate,
+      parentId: schema.apiKeys.parentId,
+      subject: schema.apiKeys.subject,
+      parentRevokedAt: parentKey.revokedAt,
+      parentRevokedBy: parentKey.revokedBy,
       channelId: schema.apiKeyChannels.channelId,
     })
     .from(schema.apiKeys)
+    .leftJoin(parentKey, eq(schema.apiKeys.parentId, parentKey.id))
     .leftJoin(
       schema.apiKeyChannels,
       eq(schema.apiKeys.id, schema.apiKeyChannels.keyId),
     )
     .where(eq(schema.apiKeys.keyPrefix, keyPrefix));
 
-  if (rows.length === 0) {
-    throw new ORPCError("UNAUTHORIZED", {
-      message: "Invalid API key",
+  const keyRow = rows[0];
+  if (!keyRow || !(await verifySecret(token, keyRow.secretHash)))
+    return undefined;
+
+  // A child of a revoked parent counts as revoked too.
+  const parentRevoked =
+    keyRow.parentId !== null &&
+    isRevoked({
+      revokedAt: keyRow.parentRevokedAt,
+      revokedBy: keyRow.parentRevokedBy,
     });
-  }
-
-  const keyRow = rows[0]!;
-
-  const valid = await verifySecret(token, keyRow.secretHash);
-  if (!valid) {
-    throw new ORPCError("UNAUTHORIZED", {
-      message: "Invalid API key",
-    });
-  }
-
-  const channelIds = rows.filter((r) => r.channelId).map((r) => r.channelId!);
-
-  await db
-    .update(schema.apiKeys)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(schema.apiKeys.id, keyRow.id));
+  const revoked = isRevoked(keyRow) || parentRevoked;
+  const revokedAt = !revoked
+    ? null
+    : ([keyRow.revokedAt, parentRevoked ? keyRow.parentRevokedAt : null]
+        .filter((date): date is Date => date !== null)
+        .sort((x, y) => x.getTime() - y.getTime())[0] ?? null);
 
   return {
-    id: keyRow.id,
-    keyPrefix: keyRow.keyPrefix,
-    name: keyRow.name,
-    owner: keyRow.owner,
-    channelIds,
+    identity: {
+      id: keyRow.id,
+      keyPrefix: keyRow.keyPrefix,
+      name: keyRow.name,
+      owner: keyRow.owner,
+      channelIds: rows.filter((r) => r.channelId).map((r) => r.channelId!),
+      canDelegate: keyRow.canDelegate,
+      parentId: keyRow.parentId,
+      subject: keyRow.subject,
+    },
+    revoked,
+    revokedAt,
   };
+}
+
+export async function authenticateApiKey(
+  token: string,
+  databaseUrl: string,
+): Promise<ApiKeyIdentity> {
+  if (!token.startsWith(KEY_PREFIX)) {
+    throw new ORPCError("UNAUTHORIZED", {
+      message: "Invalid API key format",
+    });
+  }
+
+  const found = await lookupApiKey(token, databaseUrl);
+  if (!found) {
+    throw new ORPCError("UNAUTHORIZED", {
+      message: "Invalid API key",
+    });
+  }
+
+  // A revoked key, or a child of a revoked parent, must never authenticate.
+  if (found.revoked) {
+    throw new ORPCError("UNAUTHORIZED", {
+      message: "API key has been revoked",
+    });
+  }
+
+  await getDb(databaseUrl)
+    .update(schema.apiKeys)
+    .set({ lastUsedAt: new Date() })
+    .where(eq(schema.apiKeys.id, found.identity.id));
+
+  return found.identity;
+}
+
+/**
+ * Validate a request to mint a child key. Children are one level deep, must
+ * come from a delegating key with an explicit channel scope, and may only
+ * narrow that scope. Returns the child's channel scope.
+ */
+export function resolveDelegatedScope(
+  parent: Pick<ApiKeyIdentity, "canDelegate" | "parentId" | "channelIds">,
+  requested: string[] | undefined,
+): string[] {
+  if (!parent.canDelegate || parent.parentId !== null) {
+    throw new ORPCError("FORBIDDEN", {
+      message: "This API key cannot mint child keys",
+    });
+  }
+  if (parent.channelIds.length === 0) {
+    throw new ORPCError("FORBIDDEN", {
+      message: "A delegating API key must be scoped to specific channels",
+    });
+  }
+  if (!requested || requested.length === 0) return [...parent.channelIds];
+
+  const outside = requested.filter((id) => !parent.channelIds.includes(id));
+  if (outside.length > 0) {
+    throw new ORPCError("FORBIDDEN", {
+      message: `Channels outside this key's scope: ${outside.join(", ")}`,
+    });
+  }
+  return [...new Set(requested)];
 }

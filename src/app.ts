@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { timingSafeEqual } from "node:crypto";
 import { WebClient } from "@slack/web-api";
 import { getAuth } from "./lib/auth";
 import { Feed } from "feed";
@@ -9,11 +10,19 @@ import { ZodSmartCoercionPlugin } from "@orpc/zod";
 import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { router } from "./api/router";
 import type { ORPCContext } from "./api/context";
-import { createApiKeyContext } from "./lib/api-keys";
+import { ORPCError } from "@orpc/server";
+import { authenticateApiKey, createApiKeyContext } from "./lib/api-keys";
+import {
+  canAccessFeed,
+  feedIdentityForApiKey,
+  type FeedIdentity,
+} from "./lib/access";
 import { getDb } from "./db";
 import * as schema from "./db/schema";
 import { eq } from "drizzle-orm";
 import * as q from "./db/queries";
+import { graphCache, invalidateGraphCache } from "./lib/graph-cache";
+import { auditActions, recordAudit } from "./lib/audit";
 import type {
   Channel as StoreChannel,
   Message as StoreMessage,
@@ -65,21 +74,170 @@ export function resolveSlackMrkdwn(text: string): string {
 }
 
 export function extractMessageText(msg: any): string {
+  return walkMessageText(msg, false);
+}
+
+/**
+ * The same text as extractMessageText, taken from the same blocks,
+ * attachments or fallback, but kept as Slack mrkdwn: rich text styles,
+ * lists, quotes, code blocks, labelled links and channel references survive.
+ * Only formatting differs; broadcasts (<!here> and friends) are dropped as
+ * resolveSlackMrkdwn drops them from text.
+ */
+export function extractMessageMrkdwn(msg: any): string {
+  return walkMessageText(msg, true)
+    .replace(/<!here>/g, "")
+    .replace(/<!channel>/g, "")
+    .replace(/<!everyone>/g, "");
+}
+
+// Escapes text the way Slack does inside mrkdwn.
+function escapeMrkdwn(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Wraps styled text in mrkdwn markers. Markers must touch the text, so
+// surrounding whitespace stays outside them.
+function styleMrkdwn(text: string, style: any): string {
+  if (!style || !text.trim()) return text;
+  const [, lead, core, trail] = text.match(/^(\s*)([\s\S]*?)(\s*)$/)!;
+  let out = core!;
+  if (style.code) {
+    out = `\`${out}\``;
+  } else {
+    if (style.strike) out = `~${out}~`;
+    if (style.italic) out = `_${out}_`;
+    if (style.bold) out = `*${out}*`;
+  }
+  return `${lead}${out}${trail}`;
+}
+
+const sameStyle = (a: any, b: any) =>
+  Boolean(a?.bold) === Boolean(b?.bold) &&
+  Boolean(a?.italic) === Boolean(b?.italic) &&
+  Boolean(a?.strike) === Boolean(b?.strike) &&
+  Boolean(a?.code) === Boolean(b?.code);
+
+function walkMessageText(msg: any, format: boolean): string {
   if (msg.blocks && msg.blocks.length > 0) {
     const parts: string[] = [];
     for (const block of msg.blocks) {
       if (block.type === "section" && block.text?.text) {
-        parts.push(block.text.text);
+        parts.push(
+          format && block.text.type === "plain_text"
+            ? escapeMrkdwn(block.text.text)
+            : block.text.text,
+        );
       } else if (block.type === "rich_text" && block.elements) {
+        const richInline = (elements: any[], plain = false): string => {
+          if (format) return richMrkdwn(elements, plain);
+          let out = "";
+          for (const el of elements) {
+            if (typeof el.text === "string" && el.text) {
+              out += el.text;
+            } else if (el.type === "emoji" && el.name) {
+              out += `:${el.name}:`;
+            } else if (el.type === "link") {
+              out += el.url || el.text || "";
+            } else if (el.type === "user") {
+              out += `<@${el.user_id}>`;
+            } else if (el.type === "channel") {
+              out += `<#${el.channel_id}>`;
+            } else if (el.type === "line_break") {
+              out += "\n";
+            } else if (Array.isArray(el.elements)) {
+              out += richInline(el.elements);
+            }
+          }
+          return out;
+        };
+        // The mrkdwn of inline elements. Neighbours that share a style,
+        // links included, are wrapped once, so an italic sentence with a
+        // link in it reads _see <url|this>_ rather than broken markers.
+        const richMrkdwn = (elements: any[], plain: boolean): string => {
+          const pieces: { text: string; style?: any }[] = [];
+          for (const el of elements) {
+            let text = "";
+            if (el.type === "link") {
+              text = el.url
+                ? `<${el.url}${
+                  el.text && el.text !== el.url
+                    ? `|${escapeMrkdwn(el.text).replace(/\|/g, "¦")}`
+                    : ""
+                }>`
+                : escapeMrkdwn(el.text || "");
+            } else if (typeof el.text === "string" && el.text) {
+              text = escapeMrkdwn(el.text);
+            } else if (el.type === "emoji" && el.name) {
+              text = `:${el.name}:`;
+            } else if (el.type === "user") {
+              text = `<@${el.user_id}>`;
+            } else if (el.type === "channel") {
+              text = `<#${el.channel_id}>`;
+            } else if (el.type === "line_break") {
+              text = "\n";
+            } else if (Array.isArray(el.elements)) {
+              text = richMrkdwn(el.elements, plain);
+              pieces.push({ text });
+              continue;
+            }
+            if (text) pieces.push({ text, style: plain ? undefined : el.style });
+          }
+
+          let out = "";
+          for (let i = 0; i < pieces.length; ) {
+            const style = pieces[i]!.style;
+            let run = "";
+            while (i < pieces.length && sameStyle(pieces[i]!.style, style)) {
+              run += pieces[i]!.text;
+              i += 1;
+            }
+            // A run may span lines; markers cannot, so each line is wrapped.
+            out += run
+              .split("\n")
+              .map((line) => styleMrkdwn(line, style))
+              .join("\n");
+          }
+          return out;
+        };
         const extractRichText = (elements: any[]): string[] => {
           const richParts: string[] = [];
           for (const element of elements) {
-            if (typeof element.text === "string" && element.text) {
-              richParts.push(element.text);
-            } else if (element.type === "emoji" && element.name) {
-              richParts.push(`:${element.name}:`);
-            }
-            if (Array.isArray(element.elements)) {
+            if (
+              element.type === "rich_text_section" ||
+              element.type === "rich_text_preformatted" ||
+              element.type === "rich_text_quote"
+            ) {
+              if (!format || element.type === "rich_text_section") {
+                richParts.push(richInline(element.elements));
+              } else if (element.type === "rich_text_preformatted") {
+                richParts.push(`\`\`\`${richInline(element.elements, true)}\`\`\``);
+              } else {
+                richParts.push(
+                  richInline(element.elements)
+                    .split("\n")
+                    .map((line) => `> ${line}`)
+                    .join("\n"),
+                );
+              }
+            } else if (element.type === "rich_text_list") {
+              const indent = "    ".repeat(Math.max(0, element.indent || 0));
+              (element.elements || []).forEach((item: any, index: number) => {
+                const text = richInline(item.elements);
+                if (!format) {
+                  richParts.push(text);
+                  return;
+                }
+                const marker =
+                  element.style === "ordered"
+                    ? `${(element.offset || 0) + index + 1}.`
+                    : "•";
+                richParts.push(`${indent}${marker} ${text}`);
+              });
+            } else if (Array.isArray(element.elements)) {
               richParts.push(...extractRichText(element.elements));
             }
           }
@@ -88,8 +246,10 @@ export function extractMessageText(msg: any): string {
         parts.push(...extractRichText(block.elements));
       } else if (block.type === "context" && block.elements) {
         for (const el of block.elements) {
-          if (el.type === "mrkdwn" || el.type === "plain_text") {
+          if (el.type === "mrkdwn") {
             parts.push(el.text);
+          } else if (el.type === "plain_text") {
+            parts.push(format ? escapeMrkdwn(el.text) : el.text);
           }
         }
       }
@@ -114,8 +274,11 @@ export function extractMessageText(msg: any): string {
     if (parts.length > 0) return parts.join("\n");
   }
   if (msg.message && typeof msg.message === "object") {
-    const nestedText = extractMessageText(msg.message);
-    if (nestedText) return nestedText;
+    const nestedText = walkMessageText(msg.message, format);
+    // The fallback below must trigger exactly when it does for plain text.
+    if (format ? walkMessageText(msg.message, false) : nestedText) {
+      return nestedText;
+    }
   }
   return msg.text || "";
 }
@@ -292,13 +455,16 @@ async function isChannelManager(
   return false;
 }
 
-async function verifySignature(
+export async function verifySignature(
   request: Request,
   body: string,
   signingSecret: string,
 ): Promise<boolean> {
+  if (!signingSecret) return false;
   const ts = request.headers.get("X-Slack-Request-Timestamp") || "";
   const sig = request.headers.get("X-Slack-Signature") || "";
+  const age = Math.abs(Date.now() / 1000 - Number(ts));
+  if (!Number.isFinite(age) || age > 60 * 5) return false;
   const baseString = `v0:${ts}:${body}`;
   const encoder = new TextEncoder();
   try {
@@ -320,10 +486,7 @@ async function verifySignature(
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
     if (computed.length !== sig.length) return false;
-    return crypto.subtle.timingSafeEqual(
-      encoder.encode(computed),
-      encoder.encode(sig),
-    );
+    return timingSafeEqual(encoder.encode(computed), encoder.encode(sig));
   } catch {
     return false;
   }
@@ -387,12 +550,24 @@ async function fireWebhook(ch: StoreChannel, msg: StoreMessage) {
   } catch { }
 }
 
+export function isSlackFileUrl(url: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(url);
+    const host = hostname.toLowerCase();
+    return (
+      protocol === "https:" && (host === "slack.com" || host.endsWith(".slack.com"))
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function uploadToCDN(
   slackUrl: string,
   botToken: string,
   cdnKey: string,
 ): Promise<string> {
-  if (!cdnKey) return slackUrl;
+  if (!cdnKey || !isSlackFileUrl(slackUrl)) return slackUrl;
   const resp = await fetch(slackUrl, {
     headers: { Authorization: `Bearer ${botToken}` },
   });
@@ -480,11 +655,7 @@ export function isSlackPermalink(text: string): boolean {
 
 // --- Feed access control ---
 
-export interface FeedIdentity {
-  type: "session" | "apikey";
-  slackId: string;
-  channelIds?: string[];
-}
+export { canAccessFeed, type FeedIdentity };
 
 async function resolveFeedIdentity(
   c: any,
@@ -509,45 +680,16 @@ async function resolveFeedIdentity(
     : queryKey;
   if (token && token.startsWith("ind_")) {
     try {
-      const identity = await createApiKeyContext({
-        req: c.req.raw,
-        databaseUrl: dbUrl,
-      });
-      if (identity.owner) {
-        const db = getDb(dbUrl);
-        const users = await db
-          .select({ slackId: schema.authUser.slackId })
-          .from(schema.authUser)
-          .where(eq(schema.authUser.id, identity.owner));
-        if (users[0]?.slackId) {
-          return {
-            type: "apikey",
-            slackId: users[0].slackId,
-            channelIds: identity.channelIds,
-          };
-        }
+      const identity = await authenticateApiKey(token, dbUrl);
+      return await feedIdentityForApiKey(getDb(dbUrl), identity);
+    } catch (err: any) {
+      if (!(err instanceof ORPCError)) {
+        console.error("Feed API key resolution error:", err?.message || err);
       }
-    } catch { }
+    }
   }
 
   return null;
-}
-
-export function canAccessFeed(
-  ch: StoreChannel,
-  identity: FeedIdentity | null,
-): boolean {
-  // API keys are scoped to specific channels
-  if (
-    identity?.type === "apikey" &&
-    identity.channelIds &&
-    identity.channelIds.length > 0
-  ) {
-    return identity.channelIds.includes(ch.id);
-  }
-  if (ch.accessPermUsers.includes("*")) return true;
-  if (!identity) return false;
-  return ch.accessPermUsers.includes(identity.slackId);
 }
 
 export function canApproveMessage({
@@ -645,13 +787,130 @@ export function resolveMessageAdmission(opts: {
       return { allowed: false, reason: "unwhitelisted bot" };
     }
   }
+const dispositionId =
+    [opts.user, opts.botId].find(
+      (id) =>
+        !!id &&
+        (opts.autoApproveUsers.includes(id) || opts.manualUsers.includes(id)),
+    ) || opts.user || opts.botId || "";
   return {
     allowed: true,
     disposition: resolvePublishDisposition(
       { autoApproveUsers: opts.autoApproveUsers, manualUsers: opts.manualUsers },
-      [opts.user, opts.botId],
+      dispositionId,
     ),
   };
+}
+
+export const MAX_BLOCK_TEXT = 3000;
+export const MAX_MESSAGE_TEXT = 40000;
+
+/**
+ * Slack caps mrkdwn text inside a section block at 3000 chars. Split a long
+ * message into <=3000-char chunks (preferring newline boundaries) so a
+ * forward is never silently truncated mid-message.
+ */
+export function chunkLongText(text: string, max = MAX_BLOCK_TEXT): string[] {
+  const chunks: string[] = [];
+  let rest = text;
+  while (rest.length > max) {
+    let cut = rest.lastIndexOf("\n", max);
+    if (cut <= 0) {
+      cut = max;
+    } else {
+      cut += 1; // keep the boundary newline on the current chunk so nothing is lost
+    }
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+/**
+ * Approval/backfill paths re-fetch the source message live from Slack, so
+ * an edit made after indigest stored the message (e.g. a teaser bot
+ * trimming an announcement) would shrink or clobber the forward. Never let
+ * that happen: when the stored record is a fuller version, keep it.
+ */
+export async function resolveForwardText(
+  db: any,
+  channelId: string,
+  messageTs: string,
+  liveText: string,
+): Promise<string> {
+  const stored = await q.getMessageBySlackTs(db, channelId, messageTs);
+  if (stored?.text && stored.text.length >= liveText.length) {
+    return stored.text;
+  }
+  return liveText;
+}
+
+/**
+ * resolveForwardText, plus the matching formatted text. When a different
+ * stored record wins, formattedText is left undefined so the stored one is
+ * kept: text and formatted text always come from the same version.
+ */
+export async function resolveForwardContent(
+  db: any,
+  channelId: string,
+  messageTs: string,
+  liveText: string,
+  liveFormattedText: string,
+): Promise<{ text: string; formattedText?: string }> {
+  const stored = await q.getMessageBySlackTs(db, channelId, messageTs);
+  if (stored?.text && stored.text.length >= liveText.length) {
+    // Identical text is the same version, so its formatting can be filled
+    // in, which also backfills messages stored before formatted text.
+    return stored.text === liveText
+      ? { text: stored.text, formattedText: liveFormattedText }
+      : { text: stored.text };
+  }
+  return { text: liveText, formattedText: liveFormattedText };
+}
+
+/** The bot's prompt once a message is approved. */
+export function approvedPromptBlocks(
+  messageTs: string,
+  hasMetadataSchema: boolean,
+): any[] {
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "✅ *Message approved and added to the feed!*",
+      },
+    },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          action_id: "indigest_no",
+          text: { type: "plain_text", text: "Undo" },
+          style: "danger" as const,
+          value: messageTs,
+        },
+        ...(hasMetadataSchema
+          ? [
+            {
+              type: "button",
+              action_id: "indigest_edit_metadata",
+              text: { type: "plain_text", text: "Edit metadata" },
+              value: messageTs,
+            },
+          ]
+          : []),
+        {
+          type: "button",
+          action_id: "indigest_refresh",
+          text: { type: "plain_text", text: "Refresh" },
+          value: messageTs,
+        },
+      ],
+    },
+  ];
 }
 
 export function canEditBotMessage(
@@ -757,7 +1016,44 @@ export function upsertMetadataBlock(
   return withoutExistingMetadata;
 }
 
-async function forwardToSubscribers(
+/**
+ * Look up a display name + avatar for a Slack user OR bot ID. Bot messages
+ * often carry only a bot_id (no user field), and `users.info` rejects a bot
+ * ID outright, so this dispatches to `bots.info` for anything shaped like
+ * one instead. Returns null (never throws) if the lookup fails, so callers
+ * can fall back to whatever attribution they already had.
+ */
+async function resolveAttributionProfile(
+  slack: WebClient,
+  id: string,
+): Promise<{ name: string; icon: string } | null> {
+  const isBot = /^B[A-Z0-9]+$/.test(id);
+  try {
+    if (isBot) {
+      const r = await slack.bots.info({ bot: id });
+      const bot = (r as any)?.bot;
+      if (!bot) return null;
+      return {
+        name: bot.name || id,
+        icon:
+          bot.icons?.image_72 || bot.icons?.image_48 || bot.icons?.image_36 || "",
+      };
+    }
+    const u = await slack.users.info({ user: id });
+    const user = u.user as any;
+    const profile = user?.profile;
+    return {
+      name: user?.real_name || user?.name || profile?.display_name || id,
+      icon:
+        profile?.image_72 || profile?.image_original || profile?.image_48 || "",
+    };
+  } catch (err) {
+    console.error(`Failed to fetch ${isBot ? "bot" : "user"} info for ${id}:`, err);
+    return null;
+  }
+}
+
+export async function forwardToSubscribers(
   msg: StoreMessage,
   sourceChannel: StoreChannel,
   db: any,
@@ -821,21 +1117,10 @@ async function forwardToSubscribers(
   const attributionUserId =
     originalAuthor.userId || (originalAuthor.userName ? "" : msg.userId);
   if (attributionUserId) {
-    try {
-      const u = await slack.users.info({ user: attributionUserId });
-      const user = u.user as any;
-      const profile = user?.profile;
-      displayName =
-        user?.real_name ||
-        user?.name ||
-        profile?.display_name ||
-        originalAuthor.userName ||
-        msg.userName ||
-        "unknown";
-      avatarUrl =
-        profile?.image_72 || profile?.image_original || profile?.image_48 || "";
-    } catch (err) {
-      console.error(`Failed to fetch user info for ${attributionUserId}:`, err);
+    const profile = await resolveAttributionProfile(slack, attributionUserId);
+    if (profile) {
+      displayName = profile.name;
+      avatarUrl = profile.icon;
     }
   }
 
@@ -879,9 +1164,9 @@ async function forwardToSubscribers(
         /\/archives\/([A-Z0-9]+)\/p(\d+)/,
       );
       if (permalinkMatch) {
-        const origChannel = permalinkMatch[1];
+        const origChannel = permalinkMatch[1]!;
         const origTs =
-          permalinkMatch[2].slice(0, 10) + "." + permalinkMatch[2].slice(10);
+          permalinkMatch[2]!.slice(0, 10) + "." + permalinkMatch[2]!.slice(10);
         try {
           const history = await slack.conversations.history({
             channel: origChannel,
@@ -891,21 +1176,23 @@ async function forwardToSubscribers(
           });
           const origMsg = history.messages?.[0] as any;
           if (origMsg) {
-            originalText = origMsg.text || "";
-            if (origMsg.user) {
-              const u = await slack.users.info({ user: origMsg.user });
-              const user = u.user as any;
-              const profile = user?.profile;
+            const liveText = extractMessageText(origMsg);
+            const storedMsg = await q
+              .getMessageBySlackTs(db, origChannel, origTs)
+              .catch(() => null);
+            originalText =
+              storedMsg?.text && storedMsg.text.length >= liveText.length
+                ? storedMsg.text
+                : liveText;
+            const origAuthorId = origMsg.user || origMsg.bot_id;
+            if (origAuthorId) {
+              const profile = await resolveAttributionProfile(
+                slack,
+                origAuthorId,
+              );
               originalAuthorName =
-                user?.real_name ||
-                user?.name ||
-                profile?.display_name ||
-                origMsg.user;
-              originalAuthorAvatar =
-                profile?.image_72 ||
-                profile?.image_original ||
-                profile?.image_48 ||
-                "";
+                profile?.name || origMsg.username || origAuthorId;
+              originalAuthorAvatar = profile?.icon || "";
             }
           }
         } catch { }
@@ -1031,20 +1318,17 @@ async function forwardToSubscribers(
         continue;
       }
 
-      const blocks: any[] = [
-        {
+      const messageText = originalText
+        ? originalText
+        : forwardLink
+          ? `<${forwardLink}|🔗 View forwarded message>`
+          : msg.text || "_[no text]_";
+      const blocks: any[] = chunkLongText(messageText, MAX_BLOCK_TEXT).map(
+        (chunk) => ({
           type: "section",
-          text: {
-            type: "mrkdwn",
-            text: (originalText
-              ? originalText
-              : forwardLink
-                ? `<${forwardLink}|🔗 View forwarded message>`
-                : msg.text || "_[no text]_"
-            ).slice(0, 3000),
-          },
-        },
-      ];
+          text: { type: "mrkdwn", text: chunk },
+        }),
+      );
       if (metadataSection) {
         blocks.push({
           type: "section",
@@ -1063,7 +1347,7 @@ async function forwardToSubscribers(
           : forwardLink
             ? `📰 Forwarded from #${sourceChannel.name}\n${forwardLink}`
             : `📰 *${displayName}* in #${sourceChannel.name}:\n${msg.text}`
-        ).slice(0, 3000),
+        ).slice(0, MAX_MESSAGE_TEXT),
         blocks,
       };
       const res = existingForward
@@ -1141,7 +1425,20 @@ app.use("/api/*", async (c, next) => {
         req: c.req.raw,
         databaseUrl: dbUrl,
       });
-    } catch { }
+    } catch (err: any) {
+      // A rejected key gets its real reason; anything else (e.g. the
+      // database being down) is logged and reported as a 503 rather than
+      // passed off as a missing key.
+      if (err instanceof ORPCError && err.code === "UNAUTHORIZED") {
+        return c.json({ error: "unauthorized", message: err.message }, 401);
+      }
+      console.error("API key resolution error:", err?.message || err);
+      c.header("Retry-After", "5");
+      return c.json(
+        { error: "unavailable", message: "Could not verify API key" },
+        503,
+      );
+    }
   }
 
   const ctx: ORPCContext = {
@@ -1154,6 +1451,10 @@ app.use("/api/*", async (c, next) => {
       .split(",")
       .map((s: string) => s.trim())
       .filter(Boolean),
+    request: {
+      ip: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || null,
+      userAgent: c.req.header("user-agent") || null,
+    },
   };
 
   const { matched: openMatched, response: openResponse } =
@@ -1883,6 +2184,7 @@ app.post("/events", async (c) => {
             userId: storedAuthors.userId,
             userName: storedAuthors.userName,
             text,
+            formattedText: extractMessageMrkdwn(ev),
             timestamp: storedTimestamp,
             metadata,
           });
@@ -2029,6 +2331,7 @@ app.post("/events", async (c) => {
                 userId: parentMsg.user || "",
                 userName: parentUserName,
                 text: resolveSlackMrkdwn(extractMessageText(parentMsg)),
+                formattedText: extractMessageMrkdwn(parentMsg),
                 timestamp: slackTsToTime(ev.thread_ts!).toISOString(),
                 metadata: {},
               });
@@ -2049,6 +2352,8 @@ app.post("/events", async (c) => {
           userId: ev.user,
           userName,
           text: resolveSlackMrkdwn(ev.text),
+          // The reply's text comes from ev.text alone, so its mrkdwn does too.
+          formattedText: extractMessageMrkdwn({ text: ev.text }),
           timestamp: slackTsToTime(ev.ts).toISOString(),
           metadata: {},
         });
@@ -2064,6 +2369,9 @@ app.post("/events", async (c) => {
 app.post("/interactions", async (c) => {
   const env = c.env;
   const body = await c.req.text();
+  if (!(await verifySignature(c.req.raw, body, env.SLACK_SIGNING_SECRET))) {
+    return c.json({ error: "invalid signature" }, 401);
+  }
   const formData = new URLSearchParams(body);
   const payloadStr = formData.get("payload");
   if (!payloadStr) return c.json({ error: "missing payload" }, 400);
@@ -2368,7 +2676,12 @@ app.post("/interactions", async (c) => {
                 field.action_id
                 ];
               if (!values) continue;
-              if (field.type === "multi_static_select") {
+              if (field.type === "static_select") {
+                // A single select reports its choice as selected_option, not value.
+                if (values.selected_option?.value) {
+                  m[field.action_id] = values.selected_option.value;
+                }
+              } else if (field.type === "multi_static_select") {
                 if (values.selected_options?.length) {
                   m[field.action_id] = values.selected_options.map(
                     (o: any) => o.value,
@@ -2447,12 +2760,23 @@ app.post("/interactions", async (c) => {
             userName,
           );
 
+          const liveText = resolveSlackMrkdwn(extractMessageText(msg));
+          const { text: forwardText, formattedText } =
+            await resolveForwardContent(
+              db,
+              channelId,
+              messageTs,
+              liveText,
+              extractMessageMrkdwn(msg),
+            );
+
           await q.upsertMessage(db, {
             slackTs: messageTs,
             channelId,
             userId: storedAuthors.userId,
             userName: storedAuthors.userName,
-            text: resolveSlackMrkdwn(extractMessageText(msg)),
+            text: forwardText,
+            formattedText,
             timestamp: storedTimestamp,
             metadata,
           });
@@ -2472,7 +2796,7 @@ app.post("/interactions", async (c) => {
             channelId,
             userId: storedAuthors.userId,
             userName: storedAuthors.userName,
-            text: resolveSlackMrkdwn(extractMessageText(msg)),
+            text: forwardText,
             timestamp: storedTimestamp,
             metadata,
           });
@@ -2540,7 +2864,7 @@ app.post("/interactions", async (c) => {
                 channelId,
                 userId: msg.user || "",
                 userName,
-                text: resolveSlackMrkdwn(extractMessageText(msg)),
+                text: forwardText,
                 rawText: extractMessageText(msg),
                 originalUserId: originalAuthor.userId,
                 originalUserName: originalAuthor.userName,
@@ -2561,35 +2885,10 @@ app.post("/interactions", async (c) => {
                 channel: channelId,
                 ts: botMessageTs,
                 text: "✅ Message approved and added to the feed!",
-                blocks: [
-                  {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: "✅ *Message approved and added to the feed!*",
-                    },
-                  },
-                  {
-                    type: "actions",
-                    elements: [
-                      {
-                        type: "button",
-                        action_id: "indigest_no",
-                        text: { type: "plain_text", text: "Undo" },
-                        style: "danger" as const,
-                        value: messageTs,
-                      },
-                      ...(channel.metadataSchema
-                        ? [{
-                          type: "button",
-                          action_id: "indigest_edit_metadata",
-                          text: { type: "plain_text", text: "Edit metadata" },
-                          value: messageTs,
-                        }]
-                        : []),
-                    ],
-                  },
-                ],
+                blocks: approvedPromptBlocks(
+                  messageTs,
+                  Boolean(channel.metadataSchema),
+                ),
               } as any);
             } catch (err: any) {
               console.error(
@@ -2642,14 +2941,18 @@ app.post("/interactions", async (c) => {
         };
         if (Array.isArray(message.blocks) && message.blocks.length > 0) {
           const blocks = message.blocks.map((block: any) => ({ ...block }));
-          const firstTextBlock = blocks.find(
-            (block: any) =>
-              block.type === "section" && block.text && typeof block.text.text === "string",
+          const edited = chunkLongText(value.trim(), MAX_BLOCK_TEXT).map(
+            (chunk) => ({
+              type: "section",
+              text: { type: "mrkdwn", text: chunk },
+            }),
           );
-          if (firstTextBlock) {
-            firstTextBlock.text = { ...firstTextBlock.text, text: value.trim() };
-            update.blocks = blocks;
-          }
+          const contextAndMetadata = blocks.filter(
+            (block: any) =>
+              block.type === "context" ||
+              block.block_id === "indigest_metadata",
+          );
+          update.blocks = [...edited, ...contextAndMetadata];
         }
         await slack.chat.update(update);
         return;
@@ -2765,12 +3068,24 @@ app.post("/interactions", async (c) => {
                 }
               }
 
+              const {
+                text: backfillText,
+                formattedText: backfillFormattedText,
+              } = await resolveForwardContent(
+                db,
+                channelId,
+                messageTs,
+                resolveSlackMrkdwn(extractMessageText(msg)),
+                extractMessageMrkdwn(msg),
+              );
+
               await q.upsertMessage(db, {
                 slackTs: messageTs,
                 channelId,
                 userId: storedAuthors.userId,
                 userName: storedAuthors.userName,
-                text: resolveSlackMrkdwn(extractMessageText(msg)),
+                text: backfillText,
+                formattedText: backfillFormattedText,
                 timestamp: storedTimestamp,
                 metadata,
               });
@@ -2787,7 +3102,7 @@ app.post("/interactions", async (c) => {
                 channelId,
                 userId,
                 userName,
-                text: resolveSlackMrkdwn(extractMessageText(msg)),
+                text: backfillText,
                 rawText: extractMessageText(msg),
                 timestamp: storedTimestamp,
                 metadata,
@@ -2998,12 +3313,24 @@ app.post("/interactions", async (c) => {
             userName,
           );
 
+          const {
+            text: approvedText,
+            formattedText: approvedFormattedText,
+          } = await resolveForwardContent(
+            db,
+            channelId,
+            messageTs,
+            resolveSlackMrkdwn(extractMessageText(msg)),
+            extractMessageMrkdwn(msg),
+          );
+
           await q.upsertMessage(db, {
             slackTs: messageTs,
             channelId,
                 userId: storedAuthors.userId,
                 userName: storedAuthors.userName,
-                text: resolveSlackMrkdwn(extractMessageText(msg)),
+                text: approvedText,
+                formattedText: approvedFormattedText,
                 timestamp: storedTimestamp,
             metadata: {},
           });
@@ -3020,7 +3347,7 @@ app.post("/interactions", async (c) => {
             channelId,
             userId: msg.user || "",
             userName,
-            text: resolveSlackMrkdwn(extractMessageText(msg)),
+            text: approvedText,
             rawText: extractMessageText(msg),
             timestamp: storedTimestamp,
             metadata: {},
@@ -3036,35 +3363,10 @@ app.post("/interactions", async (c) => {
                 channel: channelId,
                 ts: botMessageTs,
                 text: "✅ Message approved and added to the feed!",
-                blocks: [
-                  {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: "✅ *Message approved and added to the feed!*",
-                    },
-                  },
-                  {
-                    type: "actions",
-                    elements: [
-                      {
-                        type: "button",
-                        action_id: "indigest_no",
-                        text: { type: "plain_text", text: "Undo" },
-                        style: "danger" as const,
-                        value: messageTs,
-                      },
-                      ...(ch.metadataSchema
-                        ? [{
-                          type: "button",
-                          action_id: "indigest_edit_metadata",
-                          text: { type: "plain_text", text: "Edit metadata" },
-                          value: messageTs,
-                        }]
-                        : []),
-                    ],
-                  },
-                ],
+                blocks: approvedPromptBlocks(
+                  messageTs,
+                  Boolean(ch.metadataSchema),
+                ),
               } as any);
             } catch (err: any) {
               console.error(
@@ -3086,6 +3388,120 @@ app.post("/interactions", async (c) => {
           await slackResponse(responseUrl, "");
         } catch (err: any) {
           await slackResponse(responseUrl, `Error: ${err.message}`);
+        }
+      } else if (action.action_id === "indigest_refresh") {
+        // Re-reads an approved message from Slack and stores it again, so
+        // edits made after approval, or changes to how Indigest stores
+        // messages, reach the feed. Metadata is kept; nothing is forwarded.
+        const clickingUser = cb.user?.id || "";
+        const lockdownUsers = (env.LOCKDOWN_USERS || "")
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter(Boolean);
+        const isLockdown = lockdownUsers.includes(clickingUser);
+        const isManager = isLockdown
+          ? false
+          : await isChannelManager(channelId, clickingUser, slack);
+        const stored = await q.getMessageBySlackTs(db, channelId, messageTs);
+        if (!stored) {
+          await slack.chat.postEphemeral({
+            channel: channelId,
+            user: clickingUser,
+            text: "❌ This message isn't in the feed, so there's nothing to refresh.",
+          });
+          return;
+        }
+        if (!canApproveMessage({
+          approvedPosters: ch.approvedPosters,
+          clickingUser,
+          messageUser: stored.userId,
+          isManager,
+          isLockdown,
+        })) {
+          await slack.chat.postEphemeral({
+            channel: channelId,
+            user: clickingUser,
+            text: "❌ You don't have permission to refresh this message.",
+          });
+          return;
+        }
+
+        try {
+          const history = await slack.conversations.history({
+            channel: channelId,
+            latest: messageTs,
+            limit: 1,
+            inclusive: true,
+          });
+          const msg = history.messages?.[0] as any;
+          if (!msg || msg.ts !== messageTs) {
+            await slack.chat.postEphemeral({
+              channel: channelId,
+              user: clickingUser,
+              text: "❌ Couldn't fetch that message from Slack.",
+            });
+            return;
+          }
+
+          const text = resolveSlackMrkdwn(extractMessageText(msg));
+          // Never let a failed read wipe what the feed already has.
+          if (!text.trim() && stored.text.trim()) {
+            await slack.chat.postEphemeral({
+              channel: channelId,
+              user: clickingUser,
+              text: "❌ Slack returned no text for this message, so the stored version was kept.",
+            });
+            return;
+          }
+
+          let userName = msg.user || "";
+          try {
+            const u = await slack.users.info({ user: msg.user });
+            userName = (u.user as any)?.name || userName;
+          } catch { }
+          const storedAuthors = resolveStoredAuthors(
+            msg,
+            msg.user || "",
+            userName,
+          );
+
+          await q.upsertMessage(db, {
+            slackTs: messageTs,
+            channelId,
+            threadTs: stored.threadTs,
+            userId: storedAuthors.userId,
+            userName: storedAuthors.userName,
+            text,
+            formattedText: extractMessageMrkdwn(msg),
+            timestamp: resolveMessageTimestamp(
+              msg,
+              messageTs,
+              stored.timestamp,
+            ),
+            metadata: stored.metadata,
+          });
+          await q.addBotAction(db, {
+            type: "refresh",
+            sourceChannelId: channelId,
+            sourceMessageTs: messageTs,
+            botChannelId: channelId,
+            botMessageTs: botMessageTs || "0",
+            userId: clickingUser,
+            command: "indigest_refresh",
+            createdAt: "",
+          });
+          await slack.chat.postEphemeral({
+            channel: channelId,
+            user: clickingUser,
+            text: "🔄 Refreshed this message from Slack.",
+          });
+        } catch (err: any) {
+          console.error("indigest_refresh failed:", err.message);
+          await slack.chat.postEphemeral({
+            channel: channelId,
+            user: clickingUser,
+            text: `❌ Error refreshing message: ${err.message}`,
+          });
         }
       } else if (action.action_id === "indigest_no") {
         const clickingUser = cb.user?.id || "";
@@ -3281,6 +3697,9 @@ async function handleSubOverride(
 
 const slackSlashCommand = async (c: any) => {  const env = c.env;
   const body = await c.req.text();
+  if (!(await verifySignature(c.req.raw, body, env.SLACK_SIGNING_SECRET))) {
+    return c.json({ error: "invalid signature" }, 401);
+  }
   const form = new URLSearchParams(body);
 
   const sourceChannelId = form.get("channel_id") || "";
@@ -3294,7 +3713,35 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
     }
   };
 
+  // Updated once the command's target channel is resolved.
+  let commandTarget = sourceChannelId;
+  const userName = form.get("user_name") || undefined;
+  const auditCommand = (
+    db: any,
+    command: string,
+    outcome: "success" | "denied" = "success",
+    reason?: string,
+  ) =>
+    recordAudit(
+      db,
+      auditActions.channelCommand({
+        actor: { type: "user", id: userId, displayName: userName },
+        target: { id: commandTarget },
+        outcome,
+        reason,
+      }),
+      {
+        source: "slack",
+        actorSlackId: userId,
+        command: `/in ${command}`,
+        ranIn: sourceChannelId,
+      },
+    );
+
   const logCommand = async (command: string, db: any) => {
+    // Any logged command may change what the feed map shows.
+    invalidateGraphCache();
+    await auditCommand(db, command);
     try {
       await db.insert(schema.botActions).values({
         type: "command",
@@ -3361,6 +3808,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
         rest = text;
       }
 
+      commandTarget = targetChannelId;
       let ch = await q.getChannel(db, targetChannelId);
       if (!ch) {
         let name = targetChannelId;
@@ -3399,9 +3847,14 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
       console.log(
         `Slash command: user=${userId} channel=${targetChannelId} cmd=${cmd} subcmd=${subcmd} arg=${arg}`,
       );
-      const targetManager = () =>
-        lockdownUsers.includes(userId) ||
-        isChannelManager(targetChannelId, userId, slack);
+      const targetManager = async () => {
+        const ok =
+          lockdownUsers.includes(userId) ||
+          (await isChannelManager(targetChannelId, userId, slack));
+        if (!ok)
+          await auditCommand(db, rest, "denied", "not a channel manager");
+        return ok;
+      };
 
       if (
         lockdownUsers.length > 0 &&
@@ -3409,6 +3862,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
         cmd !== "status" &&
         cmd !== ""
       ) {
+        await auditCommand(db, rest, "denied", "lockdown mode");
         await respond(
           "🔒 indigest is in lockdown mode. Only authorized users can run commands.",
         );
@@ -3475,7 +3929,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           return;
         }
         await q.removeSubscription(db, sourceChannelId, sourceId);
-        cachedGraph = null;
+        invalidateGraphCache();
         await logCommand(`unsub #${sourceName}`, db);
         await respond(`📰 Unsubscribed from #${sourceName}.`);
       };
@@ -3813,7 +4267,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           }
 
           await q.addSubscription(db, sourceChannelId, sourceId);
-          cachedGraph = null;
+          invalidateGraphCache();
           await logCommand(`sub #${sourceName}`, db);
           await respond(
             `📰 Subscribed to #${sourceName}. Messages pub'd there will be forwarded here.`,
@@ -4365,14 +4819,14 @@ app.get("/api/channels/:id", async (c) => {
 });
 
 // --- Graph API (for React Flow diagram) ---
-let cachedGraph: { data: any; at: number } | null = null;
 const GRAPH_CACHE_TTL = 60_000; // 1 minute
 
 app.get("/api/graph", async (c) => {
   const env = c.env;
 
+  const cachedGraph = graphCache.value;
   if (cachedGraph && Date.now() - cachedGraph.at < GRAPH_CACHE_TTL) {
-    return c.json(cachedGraph.data);
+    return c.json(cachedGraph.data as any);
   }
 
   const db = getDb(getDbUrl(env));
@@ -4503,7 +4957,7 @@ app.get("/api/graph", async (c) => {
   }
 
   const result = { data: { nodes, edges } };
-  cachedGraph = { data: result, at: Date.now() };
+  graphCache.value = { data: result, at: Date.now() };
   return c.json(result);
 });
 

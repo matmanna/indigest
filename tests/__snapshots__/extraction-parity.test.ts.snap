@@ -1,0 +1,785 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`message extraction parity > attachmentsOnly 1`] = `
+{
+  "authors": {
+    "userId": "",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "Pre
+Attachment title
+*attachment* text
+Field
+Value",
+  "text": "Pre
+Attachment title
+*attachment* text
+Field
+Value",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > botActionsOnlyBlocks 1`] = `
+{
+  "authors": {
+    "userId": "",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "Only the fallback text <@U3>",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "Only the fallback text <@U3>",
+  "text": "Only the fallback text <@U3>",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > botSectionBlocks 1`] = `
+{
+  "authors": {
+    "userId": "",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "fallback text",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "*Bold* bot text with <https://x.com|a link>
+Plain & simple
+_context_",
+  "text": "*Bold* bot text with a link
+Plain & simple
+_context_",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > emptyBlocksFallback 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "Just *text* with <#C1|general> and <!channel>",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "Just *text* with <#C1|general> and <!channel>",
+  "text": "Just *text* with #general and ",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > emptyRichText 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "",
+  "isEmpty": true,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "",
+  "text": "",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > forwardedBlank 1`] = `
+{
+  "authors": {
+    "userId": "U5",
+    "userName": "orig",
+  },
+  "blankForward": true,
+  "forwarderComment": "",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {
+    "userId": "U5",
+    "userName": "orig",
+  },
+  "originalTimestamp": "1690000000.000100",
+  "raw": "Original _forwarded_ text",
+  "text": "Original _forwarded_ text",
+  "timestamp": "2023-07-22T04:26:40.000Z",
+}
+`;
+
+exports[`message extraction parity > forwardedWithComment 1`] = `
+{
+  "authors": {
+    "userId": "U4,U5",
+    "userName": "forwarder,orig",
+  },
+  "blankForward": false,
+  "forwarderComment": "my comment",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {
+    "userId": "U5",
+    "userName": "orig",
+  },
+  "originalTimestamp": "1690000000.000200",
+  "raw": "my comment",
+  "text": "my comment",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > italicSentenceWithLinks 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "fallback",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "Disclosure/COI notice: I maintain Slick, the biggest mod.
+Next line bold
+across lines",
+  "text": "Disclosure/COI notice: I maintain Slick, the biggest mod.
+Next line bold
+across lines",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > linkOnly 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "<https://only.link>",
+  "isEmpty": false,
+  "isLinkOnly": true,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "https://only.link",
+  "text": "https://only.link",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > linksMentionsEmoji 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "fallback",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "See the docs, https://example.org, ask <@U2> in <#C9> :tada: bold link",
+  "text": "See the docs, https://example.org, ask <@U2> in #C9 :tada: bold link",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > listsQuotesCode 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "fallback",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "Intro
+
+first
+second bold
+nested
+third
+fourth
+quoted line
+second quoted
+const a = 1 < 2;
+return *a*;
+Outro",
+  "text": "Intro
+
+first
+second bold
+nested
+third
+fourth
+quoted line
+second quoted
+const a = 1 < 2;
+return *a*;
+Outro",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > nestedMessage 1`] = `
+{
+  "authors": {
+    "userId": "U6",
+    "userName": "",
+  },
+  "blankForward": true,
+  "forwarderComment": "",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {
+    "userId": "U6",
+    "userName": undefined,
+  },
+  "originalTimestamp": "1690000000.000300",
+  "raw": "nested rich",
+  "text": "nested rich",
+  "timestamp": "2023-07-22T04:26:40.000Z",
+}
+`;
+
+exports[`message extraction parity > noBlocks 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "No blocks <https://y.com|label> &amp; stuff",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "No blocks <https://y.com|label> &amp; stuff",
+  "text": "No blocks label & stuff",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > plainRichText 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "hello world",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "hello world",
+  "text": "hello world",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity > styledRichText 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "fallback",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "Plain bold and italic and struck and code() and both .
+
+Second paragraph & <angle> text.",
+  "text": "Plain bold and italic and struck and code() and both .
+
+Second paragraph & <angle> text.",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity attachmentsOnly 1`] = `
+{
+  "authors": {
+    "userId": "",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": 
+"Pre
+Attachment title
+*attachment* text
+Field
+Value"
+,
+  "text": 
+"Pre
+Attachment title
+*attachment* text
+Field
+Value"
+,
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity botActionsOnlyBlocks 1`] = `
+{
+  "authors": {
+    "userId": "",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "Only the fallback text <@U3>",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "Only the fallback text <@U3>",
+  "text": "Only the fallback text <@U3>",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity botSectionBlocks 1`] = `
+{
+  "authors": {
+    "userId": "",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "fallback text",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": 
+"*Bold* bot text with <https://x.com|a link>
+Plain & simple
+_context_"
+,
+  "text": 
+"*Bold* bot text with a link
+Plain & simple
+_context_"
+,
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity emptyBlocksFallback 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "Just *text* with <#C1|general> and <!channel>",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "Just *text* with <#C1|general> and <!channel>",
+  "text": "Just *text* with #general and ",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity emptyRichText 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "",
+  "isEmpty": true,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "",
+  "text": "",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity forwardedBlank 1`] = `
+{
+  "authors": {
+    "userId": "U5",
+    "userName": "orig",
+  },
+  "blankForward": true,
+  "forwarderComment": "",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {
+    "userId": "U5",
+    "userName": "orig",
+  },
+  "originalTimestamp": "1690000000.000100",
+  "raw": "Original _forwarded_ text",
+  "text": "Original _forwarded_ text",
+  "timestamp": "2023-07-22T04:26:40.000Z",
+}
+`;
+
+exports[`message extraction parity forwardedWithComment 1`] = `
+{
+  "authors": {
+    "userId": "U4,U5",
+    "userName": "forwarder,orig",
+  },
+  "blankForward": false,
+  "forwarderComment": "my comment",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {
+    "userId": "U5",
+    "userName": "orig",
+  },
+  "originalTimestamp": "1690000000.000200",
+  "raw": "my comment",
+  "text": "my comment",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity italicSentenceWithLinks 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "fallback",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": 
+"Disclosure/COI notice: I maintain Slick, the biggest mod.
+Next line bold
+across lines"
+,
+  "text": 
+"Disclosure/COI notice: I maintain Slick, the biggest mod.
+Next line bold
+across lines"
+,
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity linkOnly 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "<https://only.link>",
+  "isEmpty": false,
+  "isLinkOnly": true,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "https://only.link",
+  "text": "https://only.link",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity linksMentionsEmoji 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "fallback",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "See the docs, https://example.org, ask <@U2> in <#C9> :tada: bold link",
+  "text": "See the docs, https://example.org, ask <@U2> in #C9 :tada: bold link",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity listsQuotesCode 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "fallback",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": 
+"Intro
+
+first
+second bold
+nested
+third
+fourth
+quoted line
+second quoted
+const a = 1 < 2;
+return *a*;
+Outro"
+,
+  "text": 
+"Intro
+
+first
+second bold
+nested
+third
+fourth
+quoted line
+second quoted
+const a = 1 < 2;
+return *a*;
+Outro"
+,
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity nestedMessage 1`] = `
+{
+  "authors": {
+    "userId": "U6",
+    "userName": "",
+  },
+  "blankForward": true,
+  "forwarderComment": "",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {
+    "userId": "U6",
+    "userName": undefined,
+  },
+  "originalTimestamp": "1690000000.000300",
+  "raw": "nested rich",
+  "text": "nested rich",
+  "timestamp": "2023-07-22T04:26:40.000Z",
+}
+`;
+
+exports[`message extraction parity noBlocks 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "No blocks <https://y.com|label> &amp; stuff",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "No blocks <https://y.com|label> &amp; stuff",
+  "text": "No blocks label & stuff",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity plainRichText 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "hello world",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": "hello world",
+  "text": "hello world",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message extraction parity styledRichText 1`] = `
+{
+  "authors": {
+    "userId": "U1",
+    "userName": "forwarder",
+  },
+  "blankForward": false,
+  "forwarderComment": "fallback",
+  "isEmpty": false,
+  "isLinkOnly": false,
+  "originalAuthor": {},
+  "originalTimestamp": undefined,
+  "raw": 
+"Plain bold and italic and struck and code() and both .
+
+Second paragraph & <angle> text."
+,
+  "text": 
+"Plain bold and italic and struck and code() and both .
+
+Second paragraph & <angle> text."
+,
+  "timestamp": "2023-11-14T22:13:20.000Z",
+}
+`;
+
+exports[`message mrkdwn > attachmentsOnly 1`] = `
+"Pre
+Attachment title
+*attachment* text
+Field
+Value"
+`;
+
+exports[`message mrkdwn > botActionsOnlyBlocks 1`] = `"Only the fallback text <@U3>"`;
+
+exports[`message mrkdwn > botSectionBlocks 1`] = `
+"*Bold* bot text with <https://x.com|a link>
+Plain &amp; simple
+_context_"
+`;
+
+exports[`message mrkdwn > emptyBlocksFallback 1`] = `"Just *text* with <#C1|general> and "`;
+
+exports[`message mrkdwn > emptyRichText 1`] = `""`;
+
+exports[`message mrkdwn > forwardedBlank 1`] = `"Original _forwarded_ text"`;
+
+exports[`message mrkdwn > forwardedWithComment 1`] = `"my _comment_"`;
+
+exports[`message mrkdwn > italicSentenceWithLinks 1`] = `
+"_Disclosure/<https://en.wikipedia.org/wiki/Wikipedia:Conflict_of_interest|COI> notice: I maintain <https://slickclient.net/|Slick>, the biggest mod._
+Next line *bold*
+*across lines*"
+`;
+
+exports[`message mrkdwn > linkOnly 1`] = `"<https://only.link>"`;
+
+exports[`message mrkdwn > linksMentionsEmoji 1`] = `"See <https://example.com/a?b=c&d=e|the docs>, <https://example.org>, ask <@U2> in <#C9> :tada: *<https://bold.example|bold link>*"`;
+
+exports[`message mrkdwn > listsQuotesCode 1`] = `
+"Intro
+
+• first
+• second *bold*
+    • nested
+3. third
+4. fourth
+> quoted line
+> second quoted
+\`\`\`const a = 1 &lt; 2;
+return *a*;\`\`\`
+Outro"
+`;
+
+exports[`message mrkdwn > nestedMessage 1`] = `"nested *rich*"`;
+
+exports[`message mrkdwn > noBlocks 1`] = `"No blocks <https://y.com|label> &amp; stuff"`;
+
+exports[`message mrkdwn > plainRichText 1`] = `"hello world"`;
+
+exports[`message mrkdwn > styledRichText 1`] = `
+"Plain *bold* and _italic_ and ~struck~ and \`code()\` and *_both_* .
+
+Second paragraph &amp; &lt;angle&gt; text."
+`;
+
+exports[`message mrkdwn attachmentsOnly 1`] = `
+"Pre
+Attachment title
+*attachment* text
+Field
+Value"
+`;
+
+exports[`message mrkdwn botActionsOnlyBlocks 1`] = `"Only the fallback text <@U3>"`;
+
+exports[`message mrkdwn botSectionBlocks 1`] = `
+"*Bold* bot text with <https://x.com|a link>
+Plain &amp; simple
+_context_"
+`;
+
+exports[`message mrkdwn emptyBlocksFallback 1`] = `"Just *text* with <#C1|general> and "`;
+
+exports[`message mrkdwn emptyRichText 1`] = `""`;
+
+exports[`message mrkdwn forwardedBlank 1`] = `"Original _forwarded_ text"`;
+
+exports[`message mrkdwn forwardedWithComment 1`] = `"my _comment_"`;
+
+exports[`message mrkdwn italicSentenceWithLinks 1`] = `
+"_Disclosure/<https://en.wikipedia.org/wiki/Wikipedia:Conflict_of_interest|COI> notice: I maintain <https://slickclient.net/|Slick>, the biggest mod._
+Next line *bold*
+*across lines*"
+`;
+
+exports[`message mrkdwn linkOnly 1`] = `"<https://only.link>"`;
+
+exports[`message mrkdwn linksMentionsEmoji 1`] = `"See <https://example.com/a?b=c&d=e|the docs>, <https://example.org>, ask <@U2> in <#C9> :tada: *<https://bold.example|bold link>*"`;
+
+exports[`message mrkdwn listsQuotesCode 1`] = `
+"Intro
+
+• first
+• second *bold*
+    • nested
+3. third
+4. fourth
+> quoted line
+> second quoted
+\`\`\`const a = 1 &lt; 2;
+return *a*;\`\`\`
+Outro"
+`;
+
+exports[`message mrkdwn nestedMessage 1`] = `"nested *rich*"`;
+
+exports[`message mrkdwn noBlocks 1`] = `"No blocks <https://y.com|label> &amp; stuff"`;
+
+exports[`message mrkdwn plainRichText 1`] = `"hello world"`;
+
+exports[`message mrkdwn styledRichText 1`] = `
+"Plain *bold* and _italic_ and ~struck~ and \`code()\` and *_both_* .
+
+Second paragraph &amp; &lt;angle&gt; text."
+`;

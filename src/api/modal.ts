@@ -120,6 +120,7 @@ function extractMetadata(
       string,
       {
         value?: string;
+        selected_option?: { value: string } | null;
         selected_options?: { value: string }[];
         selected_date?: string;
         files?: any[];
@@ -133,6 +134,12 @@ function extractMetadata(
     if (!values) continue;
 
     switch (field.type) {
+      case "static_select":
+        // A single select reports its choice as selected_option, not value.
+        if (values.selected_option?.value) {
+          metadata[field.action_id] = values.selected_option.value;
+        }
+        break;
       case "multi_static_select":
         if (values.selected_options?.length) {
           metadata[field.action_id] = values.selected_options.map(
@@ -227,6 +234,7 @@ export function extractMetadataFromView(
       string,
       {
         value?: string;
+        selected_option?: { value: string } | null;
         selected_options?: { value: string }[];
         selected_date?: string;
         files?: any[];

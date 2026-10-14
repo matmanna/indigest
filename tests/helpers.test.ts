@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   canAccessFeed,
+  chunkLongText,
   findExistingForward,
   hasProvidedMetadata,
   hasChannelPing,
@@ -197,6 +198,45 @@ describe("pure helpers", () => {
       expect(resolvePublishDisposition(ch(["U1"]), [undefined, "B1"])).toBe("drop");
     });
   });
+  describe("chunkLongText", () => {
+    test("returns short text unchanged as a single chunk", () => {
+      expect(chunkLongText("hello world")).toEqual(["hello world"]);
+      expect(chunkLongText("")).toEqual([]);
+    });
+    test("chunks long text so every chunk fits the Slack section block limit", () => {
+      const long = "x".repeat(9000);
+      const chunks = chunkLongText(long);
+      expect(chunks.length).toBe(3);
+      for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(3000);
+      expect(chunks.join("")).toBe(long);
+    });
+    test("splits on newline boundaries without losing or clipping lines", () => {
+      const body = "line one\n".repeat(400);
+      const chunks = chunkLongText(body);
+      for (const chunk of chunks) {
+        expect(chunk.length).toBeGreaterThan(0);
+        expect(chunk.length).toBeLessThanOrEqual(3000);
+      }
+      expect(chunks.join("")).toBe(body);
+    });
+    test("hard-splits an overlong single line rather than losing content", () => {
+      const body = "a".repeat(3200);
+      const chunks = chunkLongText(body);
+      expect(chunks.length).toBe(2);
+      expect(chunks[0]).toBe("a".repeat(3000));
+      expect(chunks[1]).toBe("a".repeat(200));
+    });
+    test("never emits an empty chunk while collapsing boundary newlines", () => {
+      const body = ("word\n".repeat(1200)).trimEnd();
+      const chunks = chunkLongText(body);
+      for (const chunk of chunks) expect(chunk.length).toBeGreaterThan(0);
+      expect(chunks.join("")).toBe(body);
+    });
+    test("reassembles the full text losslessly", () => {
+      const body = Array.from({ length: 50 }, (_, i) => `line ${i} ` + "y".repeat(80)).join("\n");
+      expect(chunkLongText(body).join("")).toBe(body);
+    });
+  });
   describe("resolveMessageAdmission", () => {
     const admit = (
       overrides: Partial<Parameters<typeof resolveMessageAdmission>[0]>,
@@ -286,5 +326,33 @@ describe("pure helpers", () => {
       expect(admit({ autoApproveUsers: auto, manualUsers: manual, user: "UX", subtype: "bot_message" }))
         .toEqual({ allowed: false, reason: "unwhitelisted bot" });
     });
+  });
+});
+
+describe("approved prompt", () => {
+  test("offers undo, refresh and, with a schema, metadata editing", async () => {
+    const { approvedPromptBlocks } = await import("../src/app");
+    const ids = (blocks: any[]) =>
+      blocks[1].elements.map((element: any) => [element.action_id, element.value]);
+    expect(ids(approvedPromptBlocks("1.2", true))).toEqual([
+      ["indigest_no", "1.2"],
+      ["indigest_edit_metadata", "1.2"],
+      ["indigest_refresh", "1.2"],
+    ]);
+    expect(ids(approvedPromptBlocks("1.2", false))).toEqual([
+      ["indigest_no", "1.2"],
+      ["indigest_refresh", "1.2"],
+    ]);
+  });
+});
+
+describe("delegated key names", () => {
+  test("carry an optional label after a hyphen", async () => {
+    const { childKeyName, childKeyLabel } = await import("../src/api/routers/apiKeys");
+    expect(childKeyName("site", "a@b.c")).toBe("site/a@b.c");
+    expect(childKeyName("site", "a@b.c", "RSS bot")).toBe("site/a@b.c - RSS bot");
+    expect(childKeyLabel("site/a@b.c - RSS bot", "site", "a@b.c")).toBe("RSS bot");
+    expect(childKeyLabel("site/a@b.c - a - b", "site", "a@b.c")).toBe("a - b");
+    expect(childKeyLabel("site/a@b.c", "site", "a@b.c")).toBeNull();
   });
 });
