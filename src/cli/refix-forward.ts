@@ -26,6 +26,7 @@ import * as q from "../db/queries";
 import * as schema from "../db/schema";
 import {
   forwardToSubscribers,
+  extractMessageMrkdwn,
   extractMessageText,
   resolveSlackMrkdwn,
   resolveMessageTimestamp,
@@ -160,6 +161,7 @@ async function main(): Promise<void> {
       userId: authors.userId,
       userName: authors.userName,
       text,
+      formattedText: extractMessageMrkdwn(liveMsg),
       timestamp,
       metadata: msg.metadata ?? {},
     });

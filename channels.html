@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
+    <script>
+      (function () {
+        var pref = null;
+        try { pref = localStorage.getItem("indigest-theme"); } catch (e) {}
+        if (pref !== "light" && pref !== "dark")
+          pref = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.theme = pref;
+      })();
+    </script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/plunger-32.png" />
+    <link rel="apple-touch-icon" href="/plunger-128.png" />
+    <title>Channels · indigest</title>
+    <meta property="og:title" content="indigest" />
+    <meta property="og:description" content="privacy-conscious slack bridge for api, webhook, rss, and pub/sub" />
+    <meta property="og:image" content="/assets/thumbnail.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400..700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    />
+    <link rel="stylesheet" href="./src/web/style.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./src/web/channels.tsx"></script>
+  </body>
+</html>

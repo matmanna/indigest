@@ -32,6 +32,8 @@ export interface Message {
   userId: string;
   userName: string;
   text: string;
+  /** `text` as Slack mrkdwn, formatting kept. Absent on older messages. */
+  formattedText?: string | null;
   /** Original Slack text, retained in memory for forwarding-policy checks. */
   rawText?: string;
   /** Original author when this Slack message is itself a forwarded message. */
@@ -138,6 +140,7 @@ function rowToMessage(r: any): Message {
     authorIds: splitAuthorList(r.userId),
     authorNames: splitAuthorList(r.userName),
     text: r.text,
+    formattedText: r.formattedText ?? null,
     timestamp: r.timestamp,
     metadata:
       typeof r.metadata === "string"
@@ -250,6 +253,7 @@ export async function upsertMessage(db: DB, msg: Message): Promise<void> {
       userId: mergeAuthorLists(msg.userId, msg.originalUserId),
       userName: mergeAuthorLists(msg.userName, msg.originalUserName),
       text: msg.text,
+      formattedText: msg.formattedText ?? null,
       threadTs: msg.threadTs || null,
       timestamp: msg.timestamp,
       metadata:
@@ -263,6 +267,10 @@ export async function upsertMessage(db: DB, msg: Message): Promise<void> {
         userId: mergeAuthorLists(msg.userId, msg.originalUserId),
         userName: mergeAuthorLists(msg.userName, msg.originalUserName),
         text: msg.text,
+        // Left alone when a caller has no formatted text to give.
+        ...(msg.formattedText !== undefined
+          ? { formattedText: msg.formattedText }
+          : {}),
         threadTs: msg.threadTs || null,
         timestamp: msg.timestamp,
         metadata:
@@ -459,6 +467,11 @@ export async function getSubscribersBySource(
     .select()
     .from(schema.subscriptions)
     .where(eq(schema.subscriptions.sourceChannelId, sourceChannelId));
+  return rows.map(rowToSubscription);
+}
+
+export async function listAllSubscriptions(db: DB): Promise<Subscription[]> {
+  const rows = await db.select().from(schema.subscriptions);
   return rows.map(rowToSubscription);
 }
 

@@ -4,15 +4,17 @@ import {
   apiKeyRequiredProcedure,
   authOrApiKeyProcedure,
   authRequiredProcedure,
+  auditAction,
   isChannelManager,
 } from "../context";
+import { auditActions } from "../../lib/audit";
 import {
   generateApiKey,
   lookupApiKey,
   resolveDelegatedScope,
 } from "../../lib/api-keys";
 import { apiKeys, apiKeyChannels, authUser, channels } from "../../db/schema";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { aliasedTable } from "drizzle-orm/alias";
 import { getChannel as dbGetChannel } from "../../db/queries";
 import type { Channel } from "../../db/queries";
@@ -31,15 +33,25 @@ export function canCreateApiKeyForChannel(
   );
 }
 
+/**
+ * The caller's keys, each with the subkeys it has minted. Admins (lockdown
+ * users) may pass `scope=all` to see every user's keys, with owners.
+ */
 export const listApiKeys = authRequiredProcedure
   .route({ method: "GET", path: "/api-keys" })
-  .handler(async ({ context }) => {
+  .input(z.object({ scope: z.enum(["mine", "all"]).default("mine") }))
+  .handler(async ({ input, context }) => {
     const db = context.db;
-    const userId = context.session?.user?.id;
-    if (!userId) return [];
+    const userId = context.session.user.id;
+    const slackId = context.session.user.slackId;
+    const all = input.scope === "all";
+    if (all && !(slackId && context.lockdownUsers.includes(slackId)))
+      throw new ORPCError("FORBIDDEN", { message: "Admins only" });
 
     const revokedByUser = aliasedTable(authUser, "revokedByUser");
-    const keys = await db
+    const ownerUser = aliasedTable(authUser, "ownerUser");
+    // Child keys share their parent's owner, so one query covers both.
+    const rows = await db
       .select({
         id: apiKeys.id,
         name: apiKeys.name,
@@ -49,31 +61,74 @@ export const listApiKeys = authRequiredProcedure
         revokedAt: apiKeys.revokedAt,
         revokedBy: revokedByUser.slackId,
         canDelegate: apiKeys.canDelegate,
+        parentId: apiKeys.parentId,
+        subject: apiKeys.subject,
+        ownerId: apiKeys.owner,
+        ownerName: ownerUser.name,
+        ownerSlackId: ownerUser.slackId,
       })
       .from(apiKeys)
       .leftJoin(revokedByUser, eq(apiKeys.revokedBy, revokedByUser.id))
-      // Child keys belong to their parent's owner but are managed through the
-      // parent key, so they stay out of the owner's key list.
-      .where(and(eq(apiKeys.owner, userId), isNull(apiKeys.parentId)));
+      .leftJoin(ownerUser, eq(apiKeys.owner, ownerUser.id))
+      .where(all ? undefined : eq(apiKeys.owner, userId))
+      .orderBy(desc(apiKeys.createdAt));
 
-    const keysWithChannels = await Promise.all(
-      keys.map(async (key) => {
-        const keyChannels = await db
-          .select({ id: apiKeyChannels.channelId, name: channels.name })
+    const ids = rows.map((r) => r.id);
+    const channelRows = ids.length
+      ? await db
+          .select({
+            keyId: apiKeyChannels.keyId,
+            id: apiKeyChannels.channelId,
+            name: channels.name,
+          })
           .from(apiKeyChannels)
           .leftJoin(channels, eq(apiKeyChannels.channelId, channels.id))
-          .where(eq(apiKeyChannels.keyId, key.id));
-        return {
-          ...key,
-          channels: keyChannels.map((c) => ({
-            id: c.id,
-            name: c.name || c.id,
-          })),
-        };
-      }),
-    );
+          .where(inArray(apiKeyChannels.keyId, ids))
+      : [];
+    const channelsByKey = new Map<number, { id: string; name: string }[]>();
+    for (const c of channelRows) {
+      if (c.keyId == null || !c.id) continue;
+      const list = channelsByKey.get(c.keyId) ?? [];
+      list.push({ id: c.id, name: c.name || c.id });
+      channelsByKey.set(c.keyId, list);
+    }
 
-    return keysWithChannels;
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const shape = (r: (typeof rows)[number]) => ({
+      id: r.id,
+      name: r.name,
+      keyPrefix: r.keyPrefix,
+      createdAt: r.createdAt,
+      lastUsedAt: r.lastUsedAt,
+      revokedAt: r.revokedAt,
+      revokedBy: r.revokedBy,
+      canDelegate: r.canDelegate,
+      channels: channelsByKey.get(r.id) ?? [],
+      owner: { id: r.ownerId, name: r.ownerName, slackId: r.ownerSlackId },
+    });
+    type Subkey = ReturnType<typeof shape> & {
+      subject: string | null;
+      label: string | null;
+    };
+    const children = new Map<number, Subkey[]>();
+    for (const r of rows) {
+      if (r.parentId == null) continue;
+      const parent = byId.get(r.parentId);
+      const list = children.get(r.parentId) ?? [];
+      list.push({
+        ...shape(r),
+        subject: r.subject,
+        label:
+          parent && r.subject
+            ? childKeyLabel(r.name, parent.name, r.subject)
+            : null,
+      });
+      children.set(r.parentId, list);
+    }
+
+    return rows
+      .filter((r) => r.parentId == null)
+      .map((r) => ({ ...shape(r), subkeys: children.get(r.id) ?? [] }));
   });
 
 export const createApiKey = authRequiredProcedure
@@ -142,6 +197,15 @@ export const createApiKey = authRequiredProcedure
     if (input.channelIds && keyRow) {
       await insertKeyChannels(db, keyRow.id, input.channelIds);
     }
+    await auditAction(context, auditActions.apiKeyCreate, {
+      target: {
+        id: String(keyRow?.id),
+        name: input.name,
+        keyPrefix,
+        channelIds: input.channelIds ?? [],
+        canDelegate: input.canDelegate ?? false,
+      },
+    });
 
     return { fullKey, keyPrefix, name: input.name, id: keyRow?.id };
   });
@@ -155,8 +219,25 @@ async function insertKeyChannels(db: DB, keyId: number, channelIds: string[]) {
 
 // Children of one parent are namespaced under the parent's name, so a
 // delegated key can never pass itself off as a first-party key.
-export function childKeyName(parentName: string, subject: string): string {
-  return `${parentName}/${subject}`;
+export function childKeyName(
+  parentName: string,
+  subject: string,
+  label?: string | null,
+): string {
+  const base = `${parentName}/${subject}`;
+  return label ? `${base} - ${label}` : base;
+}
+
+// The label a subject gave a child key, read back out of its name
+// ("parent/subject - Feedly" gives "Feedly"). Null when it has none.
+export function childKeyLabel(
+  name: string,
+  parentName: string,
+  subject: string,
+): string | null {
+  const base = childKeyName(parentName, subject);
+  if (!name.startsWith(`${base} - `)) return null;
+  return name.slice(base.length + 3) || null;
 }
 
 function revokeChildrenOf(db: DB, parentId: number, subject: string) {
@@ -183,15 +264,19 @@ const subjectSchema = z
   );
 
 /**
- * Mint a child key for one end user (the subject) of a delegating key. Each
- * subject holds at most one live child per parent, so minting again rotates.
+ * Mint a child key for one end user (the subject) of a delegating key. A
+ * subject may hold any number of live children: minting never revokes the
+ * ones they already have. Revoke them by value, or all at once by subject.
  */
+const labelSchema = z.string().trim().min(1).max(60);
+
 export const delegateApiKey = apiKeyRequiredProcedure
   .route({ method: "POST", path: "/api-keys/delegate" })
   .input(
     z.object({
       subject: subjectSchema,
       channelIds: z.array(z.string()).optional(),
+      label: labelSchema.optional(),
     }),
   )
   .handler(async ({ input, context }) => {
@@ -199,10 +284,8 @@ export const delegateApiKey = apiKeyRequiredProcedure
     const channelIds = resolveDelegatedScope(parent, input.channelIds);
     const db = context.db;
 
-    await revokeChildrenOf(db, parent.id, input.subject);
-
     const { fullKey, keyPrefix, secretHash } = generateApiKey();
-    const name = childKeyName(parent.name, input.subject);
+    const name = childKeyName(parent.name, input.subject, input.label);
     const [keyRow] = await db
       .insert(apiKeys)
       .values({
@@ -220,8 +303,92 @@ export const delegateApiKey = apiKeyRequiredProcedure
       });
 
     await insertKeyChannels(db, keyRow.id, channelIds);
+    await auditAction(context, auditActions.apiKeyDelegate, {
+      target: {
+        id: String(keyRow.id),
+        parentId: parent.id,
+        subject: input.subject,
+        channelIds,
+        label: input.label ?? null,
+      },
+    });
 
-    return { fullKey, keyPrefix, name, id: keyRow.id, channelIds };
+    return {
+      fullKey,
+      keyPrefix,
+      name,
+      id: keyRow.id,
+      channelIds,
+      label: input.label ?? null,
+    };
+  });
+
+/** A subject's live delegated keys, newest first. Never includes secrets. */
+export const listDelegatedApiKeys = apiKeyRequiredProcedure
+  .route({ method: "GET", path: "/api-keys/delegate/{subject}" })
+  .input(z.object({ subject: subjectSchema }))
+  .handler(async ({ input, context }) => {
+    resolveDelegatedScope(context.apiKey, undefined);
+    const keys = await context.db
+      .select({
+        id: apiKeys.id,
+        name: apiKeys.name,
+        keyPrefix: apiKeys.keyPrefix,
+        createdAt: apiKeys.createdAt,
+        lastUsedAt: apiKeys.lastUsedAt,
+      })
+      .from(apiKeys)
+      .where(
+        and(
+          eq(apiKeys.parentId, context.apiKey.id),
+          eq(apiKeys.subject, input.subject),
+          isNull(apiKeys.revokedAt),
+          isNull(apiKeys.revokedBy),
+        ),
+      )
+      .orderBy(desc(apiKeys.createdAt));
+    return {
+      keys: keys.map(({ name, ...key }) => ({
+        ...key,
+        label: childKeyLabel(name, context.apiKey.name, input.subject),
+        createdAt: key.createdAt.toISOString(),
+        lastUsedAt: key.lastUsedAt?.toISOString() ?? null,
+      })),
+    };
+  });
+
+/** Revoke one of a subject's delegated keys by id. */
+export const revokeDelegatedApiKey = apiKeyRequiredProcedure
+  .route({ method: "DELETE", path: "/api-keys/delegate/{subject}/{id}" })
+  .input(z.object({ subject: subjectSchema, id: z.coerce.number().int() }))
+  .handler(async ({ input, context }) => {
+    resolveDelegatedScope(context.apiKey, undefined);
+    // Scoped to this parent and subject, so a caller can only revoke keys it
+    // minted for that person.
+    const revoked = await context.db
+      .update(apiKeys)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(apiKeys.id, input.id),
+          eq(apiKeys.parentId, context.apiKey.id),
+          eq(apiKeys.subject, input.subject),
+          isNull(apiKeys.revokedAt),
+        ),
+      )
+      .returning({ id: apiKeys.id });
+    await auditAction(context, auditActions.apiKeyRevoke, {
+      target: {
+        id: String(input.id),
+        parentId: context.apiKey.id,
+        subject: input.subject,
+      },
+      outcome: revoked.length ? undefined : "denied",
+      reason: revoked.length
+        ? "revoked one delegated key"
+        : "no live key with that id for this subject",
+    });
+    return { ok: true, revoked: revoked.length };
   });
 
 export const revokeDelegatedApiKeys = apiKeyRequiredProcedure
@@ -234,6 +401,14 @@ export const revokeDelegatedApiKeys = apiKeyRequiredProcedure
       context.apiKey.id,
       input.subject,
     );
+    await auditAction(context, auditActions.apiKeyRevoke, {
+      target: {
+        id: revoked.map((r) => r.id).join(",") || "none",
+        parentId: context.apiKey.id,
+        subject: input.subject,
+      },
+      reason: "revoked delegated keys by subject",
+    });
     return { ok: true, revoked: revoked.length };
   });
 
@@ -264,8 +439,15 @@ export const revokeApiKey = authRequiredProcedure
       .from(apiKeys)
       .where(eq(apiKeys.id, input.id));
     const isLockdown = !!slackId && context.lockdownUsers.includes(slackId);
-    if (!key || (key.owner !== userId && !isLockdown))
+    if (!key || (key.owner !== userId && !isLockdown)) {
+      if (key)
+        await auditAction(context, auditActions.apiKeyRevoke, {
+          target: { id: String(input.id) },
+          outcome: "denied",
+          reason: "not the key's owner",
+        });
       throw new ORPCError("NOT_FOUND", { message: "API key not found" });
+    }
 
     // Channel rows stay: deleting them would turn a scoped key into an
     // unscoped one. Revocation alone is what stops the key authenticating.
@@ -273,6 +455,10 @@ export const revokeApiKey = authRequiredProcedure
       .update(apiKeys)
       .set({ revokedBy: userId, revokedAt: new Date() })
       .where(eq(apiKeys.id, input.id));
+    await auditAction(context, auditActions.apiKeyRevoke, {
+      target: { id: String(input.id), owner: key.owner },
+      reason: key.owner === userId ? undefined : "revoked by admin",
+    });
     return { ok: true };
   });
 
@@ -298,6 +484,10 @@ export const revokeApiKeyByValue = authOrApiKeyProcedure
         revokedBy: context.session?.user.id ?? null,
       })
       .where(eq(apiKeys.id, found.identity.id));
+    await auditAction(context, auditActions.apiKeyRevoke, {
+      target: { id: String(found.identity.id), name: found.identity.name },
+      reason: "revoked by presenting the key",
+    });
     return { ok: true, alreadyRevoked: false };
   });
 
@@ -337,6 +527,8 @@ export const apiKeyRouter = {
   revoke: revokeApiKey,
   delegate: delegateApiKey,
   revokeDelegated: revokeDelegatedApiKeys,
+  listDelegated: listDelegatedApiKeys,
+  revokeOneDelegated: revokeDelegatedApiKey,
   self: introspectApiKey,
   revokeByValue: revokeApiKeyByValue,
   delegateStatus: delegatedKeyStatus,

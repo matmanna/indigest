@@ -328,3 +328,31 @@ describe("pure helpers", () => {
     });
   });
 });
+
+describe("approved prompt", () => {
+  test("offers undo, refresh and, with a schema, metadata editing", async () => {
+    const { approvedPromptBlocks } = await import("../src/app");
+    const ids = (blocks: any[]) =>
+      blocks[1].elements.map((element: any) => [element.action_id, element.value]);
+    expect(ids(approvedPromptBlocks("1.2", true))).toEqual([
+      ["indigest_no", "1.2"],
+      ["indigest_edit_metadata", "1.2"],
+      ["indigest_refresh", "1.2"],
+    ]);
+    expect(ids(approvedPromptBlocks("1.2", false))).toEqual([
+      ["indigest_no", "1.2"],
+      ["indigest_refresh", "1.2"],
+    ]);
+  });
+});
+
+describe("delegated key names", () => {
+  test("carry an optional label after a hyphen", async () => {
+    const { childKeyName, childKeyLabel } = await import("../src/api/routers/apiKeys");
+    expect(childKeyName("site", "a@b.c")).toBe("site/a@b.c");
+    expect(childKeyName("site", "a@b.c", "RSS bot")).toBe("site/a@b.c - RSS bot");
+    expect(childKeyLabel("site/a@b.c - RSS bot", "site", "a@b.c")).toBe("RSS bot");
+    expect(childKeyLabel("site/a@b.c - a - b", "site", "a@b.c")).toBe("a - b");
+    expect(childKeyLabel("site/a@b.c", "site", "a@b.c")).toBeNull();
+  });
+});

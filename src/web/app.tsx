@@ -1,375 +1,182 @@
-import { useState, useEffect, useCallback } from "react";
-import {
-  ReactFlow,
-  Background,
-  Controls,
-  Handle,
-  Position,
-  useNodesState,
-  useEdgesState,
-  type Node,
-  type Edge,
-} from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
-import "./lockdown";
 import { renderPage } from "./layout";
+import { FeedMap } from "./flow";
+import { authClient } from "../lib/auth-client";
+import {
+  Icon,
+  Skeleton,
+  channelPageUrl,
+  useApi,
+  type Channel,
+  type IconName,
+  type SubscriptionRow,
+} from "./ui";
 
-const TEAM_ID = "T024F7C8B";
-const slackLink = (channelId: string) =>
-  `https://hackclub.enterprise.slack.com/archives/${channelId}`;
-const parseApprovedPosters = (raw: string): string[] => {
-  if (!raw) return [];
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return [];
-  }
-};
-const accessLabel = (raw: string): string => {
-  const p = parseApprovedPosters(raw);
-  if (p.length === 0) return "poster + managers";
-  return p.includes("poster") ? "poster + managers + op" : p.join(", ");
-};
-const fmtDate = (s: string) => {
-  try {
-    return new Date(s).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
-  } catch {
-    return s;
-  }
-};
-const highlightJson = (json: string): string =>
-  json.replace(
-    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g,
-    (m) => {
-      if (/^"/.test(m))
-        return /:$/.test(m)
-          ? `<span class="json-key">${m}</span>`
-          : `<span class="json-string">${m}</span>`;
-      if (/true|false/.test(m)) return `<span class="json-bool">${m}</span>`;
-      return `<span class="json-number">${m}</span>`;
-    },
-  );
-
-interface GraphNode {
-  id: string;
-  type: string;
-  label: string;
-  data: Record<string, any>;
-}
-interface GraphEdge {
-  id: string;
-  source: string;
-  target: string;
-  label?: string;
-  animated: boolean;
-}
-
-function ChannelNode({ data }: { data: any }) {
-  const posters = parseApprovedPosters(data.approvedPosters || "");
-  let schema: any = null;
-  try {
-    schema = data.metadataSchema ? JSON.parse(data.metadataSchema) : null;
-  } catch {}
+/** "Slack" with Slack's official icon (SLA-Slack-icon-RGB from Slack's media kit). */
+function SlackWord() {
   return (
-    <div class="node-channel">
-      <Handle type="source" position={Position.Right} />
-      <div class="node-header">
-        <span class="node-name">
-          {data.name ? `#${data.name}` : data.channelId}
-        </span>
-        <a
-          class="node-link"
-          href={slackLink(data.channelId)}
-          target="_blank"
-          rel="noopener"
-        >
-          open ↗
-        </a>
+    <span className="slack-word">
+      <img className="slack-icon" src="/slack-icon.svg" alt="" />
+      Slack
+    </span>
+  );
+}
+
+function Stat({ label, value, icon }: { label: string; value: number | null; icon: IconName }) {
+  return (
+    <div className="card stat">
+      <div className="stat-label">
+        <Icon name={icon} size={15} />
+        {label}
       </div>
-      <div class="node-body">
-        <div class="node-detail">enabled: {data.enabled ? "yes" : "no"}</div>
-        <div class="node-detail">
-          access: {accessLabel(data.approvedPosters)}
-        </div>
-        {posters.length > 0 && (
-          <div class="node-detail">approved: {posters.join(", ")}</div>
-        )}
-        {data.createdAt && (
-          <div class="node-detail">created: {fmtDate(data.createdAt)}</div>
-        )}
-        {data.linkMode && (
-          <div class="node-detail">
-            link mode: {data.linkMode ? "yes" : "no"}
+      <div className="stat-value">{value == null ? <Skeleton w={48} h={28} /> : value}</div>
+    </div>
+  );
+}
+
+function ColumnList({
+  title,
+  href,
+  count,
+  rows,
+  empty,
+}: {
+  title: string;
+  href: string;
+  count: number | null;
+  rows: { key: string; icon: IconName; label: React.ReactNode; href: string }[] | null;
+  empty: string;
+}) {
+  return (
+    <div className="col-list">
+      <a className="col-list-head" href={href}>
+        {title}
+        {count != null && <span className="count">{count}</span>}
+        <Icon name="chevronRight" size={14} />
+      </a>
+      {rows === null &&
+        [0, 1, 2, 3, 4].map((i) => (
+          <div key={i} style={{ padding: "18px 4px", borderBottom: "1px solid var(--border)" }}>
+            <Skeleton w={`${60 + ((i * 13) % 30)}%`} />
           </div>
-        )}
-        {data.metadataRequired && (
-          <div class="node-detail">metadata: required</div>
-        )}
-        {schema && (
-          <details class="node-details">
-            <summary>metadata schema</summary>
-            <pre
-              class="node-code"
-              dangerouslySetInnerHTML={{
-                __html: highlightJson(JSON.stringify(schema, null, 2)),
-              }}
-            />
-          </details>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function FeedNode({ data }: { data: any }) {
-  const labels: Record<string, string> = {
-    rss: "rss",
-    api: "api",
-    webhook: "webhook",
-  };
-  const linkFor = (): string | null => {
-    const channelId = data.channelId;
-    if (!channelId) return null;
-    if (data.feedType === "rss")
-      return `/feed/${encodeURIComponent(channelId)}`;
-    if (data.feedType === "api")
-      return `/api/messages?channel=${encodeURIComponent(channelId)}`;
-    if (data.feedType === "webhook") return data.url || null;
-    return null;
-  };
-  const href = linkFor();
-  return (
-    <div class="node-feed">
-      <Handle type="target" position={Position.Left} />
-      <span>[{labels[data.feedType] || "feed"}]</span>
-      {href && (
-        <a
-          class="node-link"
-          href={href}
-          target={href.startsWith("http") ? "_blank" : undefined}
-          rel={href.startsWith("http") ? "noopener" : undefined}
-        >
-          open ↗
+        ))}
+      {rows?.length === 0 && <p className="muted small" style={{ padding: "16px 4px" }}>{empty}</p>}
+      {rows?.map((r) => (
+        <a key={r.key} className="col-row" href={r.href}>
+          <Icon name={r.icon} size={18} />
+          <span className="col-row-name">{r.label}</span>
+          <Icon name="chevronRight" size={14} />
         </a>
-      )}
+      ))}
     </div>
   );
 }
 
-function SubscriptionNode() {
-  return (
-    <div class="node-subscription">
-      <Handle type="target" position={Position.Left} />
-      <Handle type="source" position={Position.Right} />
-      [pub]
-    </div>
-  );
-}
+function Home() {
+  const { data: session } = authClient.useSession();
+  const channels = useApi<Channel[]>("/channels");
+  const subs = useApi<SubscriptionRow[]>("/subscriptions/all");
+  const keys = useApi<{ revokedAt: string | null }[]>(session?.user ? "/api-keys" : null);
 
-function SubscriberNode({ data }: { data: any }) {
+  const pubd = channels.data?.filter((c) => c.enabled) ?? null;
+  const recent = pubd
+    ? [...pubd].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).slice(0, 5)
+    : null;
+  const webhooks = pubd ? pubd.filter((c) => c.webhookUrl).length : null;
+  const first = session?.user?.name?.split(" ")[0];
+
   return (
-    <div class="node-subscriber">
-      <Handle type="target" position={Position.Left} />
-      <div class="node-header">
-        <span class="node-name">
-          {data.name ? `#${data.name}` : data.channelId}
-        </span>
-        <a
-          class="node-link"
-          href={slackLink(data.channelId)}
-          target="_blank"
-          rel="noopener"
-        >
-          open ↗
+    <div className="stack" style={{ gap: 40 }}>
+      <div className="hero">
+        <a className="pill-announce" href="/usage.html">
+          <Icon name="slack" /> Run <code>/in pub</code> in any channel to get started
+          <Icon name="arrowRight" size={14} />
         </a>
+        <h1>
+          {first ? (
+            `Welcome back, ${first}.`
+          ) : (
+            <>
+              Pipe <SlackWord /> into anything.
+            </>
+          )}
+        </h1>
+        <p>Privacy-conscious bridge from Slack channels to RSS, JSON API, webhooks, and pub/sub.</p>
       </div>
-      <div class="node-body">
-        <div class="node-detail">
-          access: {accessLabel(data.approvedPosters)}
+
+      <div className="grid-4">
+        <Stat label="Pub'd channels" value={pubd?.length ?? null} icon="hash" />
+        <Stat label="Subscriptions" value={subs.data?.length ?? null} icon="radio" />
+        <Stat label="Webhooks" value={webhooks} icon="webhook" />
+        <Stat
+          label="Your active keys"
+          value={session?.user ? (keys.data?.filter((k) => !k.revokedAt).length ?? null) : 0}
+          icon="key"
+        />
+      </div>
+
+      <div className="grid-3">
+        <ColumnList
+          title="Channels"
+          href="/channels.html"
+          count={pubd?.length ?? null}
+          empty="No channels pub'd yet."
+          rows={
+            recent?.map((c) => ({
+              key: c.id,
+              icon: "hash" as const,
+              label: c.name || c.id,
+              href: channelPageUrl(c.id),
+            })) ?? null
+          }
+        />
+        <ColumnList
+          title="Pub/sub"
+          href="/subscriptions.html"
+          count={subs.data?.length ?? null}
+          empty="No subscriptions yet."
+          rows={
+            subs.data?.slice(0, 5).map((s) => ({
+              key: `${s.sourceChannelId}-${s.subscriberChannelId}`,
+              icon: "radio" as const,
+              label: (
+                <>
+                  <span className="col-row-muted">#{s.sourceName || s.sourceChannelId} → </span>#
+                  {s.subscriberName || s.subscriberChannelId}
+                </>
+              ),
+              href: channelPageUrl(s.subscriberChannelId),
+            })) ?? null
+          }
+        />
+        <ColumnList
+          title="Get started"
+          href="/usage.html"
+          count={null}
+          empty=""
+          rows={[
+            { key: "keys", icon: "key", label: "Create an API key", href: "/keys.html" },
+            { key: "docs", icon: "code", label: "Browse the API reference", href: "/docs.html" },
+            { key: "usage", icon: "terminal", label: "Slack command reference", href: "/usage.html" },
+            { key: "map", icon: "map", label: "Explore the feed map", href: "/map.html" },
+            {
+              key: "settings",
+              icon: "settings",
+              label: session?.user ? "Account settings" : "Sign in",
+              href: session?.user ? "/settings.html" : "/login.html",
+            },
+          ]}
+        />
+      </div>
+
+      <section>
+        <div className="row" style={{ marginBottom: 16 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em" }}>Feed map</h2>
+          <span className="muted small">Channels, their feeds, and who they forward to.</span>
         </div>
-        {data.createdAt && (
-          <div class="node-detail">created: {fmtDate(data.createdAt)}</div>
-        )}
-      </div>
+        <FeedMap interactive={false} />
+      </section>
     </div>
   );
 }
 
-const nodeTypes = {
-  channel: ChannelNode,
-  feed: FeedNode,
-  subscription: SubscriptionNode,
-  subscriber: SubscriberNode,
-};
-
-function layoutGraph(
-  rawNodes: GraphNode[],
-  rawEdges: GraphEdge[],
-): { nodes: Node[]; edges: Edge[] } {
-  const channels = rawNodes.filter((n) => n.type === "channel");
-  const feeds = rawNodes.filter((n) => n.type === "feed");
-  const subscribers = rawNodes.filter((n) => n.type === "subscriber");
-  const subEdges = rawEdges.filter((e) => e.label === "[sub]");
-
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
-  const colX = [40, 300, 740];
-  const rowH = 28;
-  const gap = 12;
-  const chSubGap = 100;
-
-  let cy = 30;
-  channels.forEach((ch) => {
-    const chFeeds = feeds.filter((f) => f.data.channelId === ch.data.channelId);
-    const chSubs = subEdges.filter((e) => e.source === ch.id);
-    nodes.push({
-      id: ch.id,
-      type: "channel",
-      position: { x: colX[0], y: cy },
-      data: ch.data,
-    });
-    let ry = cy;
-    chFeeds.forEach((f) => {
-      nodes.push({
-        id: f.id,
-        type: "feed",
-        position: { x: colX[1], y: ry },
-        data: f.data,
-      });
-      edges.push({
-        id: `e-${ch.id}-${f.id}`,
-        source: ch.id,
-        target: f.id,
-        type: "default",
-      });
-      ry += rowH + gap;
-    });
-    chSubs.forEach((edge) => {
-      const subNodeId = `subnode:${edge.source}:${edge.target}`;
-      nodes.push({
-        id: subNodeId,
-        type: "subscription",
-        position: { x: colX[1], y: ry },
-        data: {},
-      });
-      edges.push({
-        id: `e-ch-${edge.source}-${edge.target}`,
-        source: ch.id,
-        target: subNodeId,
-        type: "default",
-      });
-      edges.push({
-        id: `e-pub-${edge.source}-${edge.target}`,
-        source: subNodeId,
-        target: edge.target,
-        label: "[sub]",
-        type: "default",
-      });
-      ry += rowH + gap;
-    });
-    cy = Math.max(cy + 56, ry) + gap;
-  });
-
-  let sy = 30;
-  subscribers.forEach((sub) => {
-    nodes.push({
-      id: sub.id,
-      type: "subscriber",
-      position: { x: colX[2], y: sy },
-      data: sub.data,
-    });
-    sy += rowH + chSubGap;
-  });
-
-  return { nodes, edges };
-}
-
-function App() {
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetch("/api/graph")
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((res) => {
-        const { nodes: n, edges: e } = layoutGraph(
-          res.data?.nodes || [],
-          res.data?.edges || [],
-        );
-        setNodes(n);
-        setEdges(e);
-        setLoading(false);
-      })
-      .catch((err) => {
-        setError(err.message);
-        setLoading(false);
-      });
-  }, [setNodes, setEdges]);
-
-  if (loading)
-    return (
-      <div class="diagram-page">
-        <div class="loading">loading...</div>
-      </div>
-    );
-  if (error)
-    return (
-      <div class="diagram-page">
-        <div class="empty-state">
-          <p>{error}</p>
-        </div>
-      </div>
-    );
-  if (nodes.length === 0)
-    return (
-      <div class="diagram-page">
-        <div class="diagram-header">
-          <h1>feed map</h1>
-        </div>
-        <div class="empty-state">
-          <p>no published channels. /in pub to start.</p>
-        </div>
-      </div>
-    );
-
-  return (
-    <div class="diagram-page">
-      <div class="diagram-header">
-        <h1>feed map</h1>
-        <p>
-          node key: #channel → [rss | api | webhook | pub] (if pub: → [sub] →
-          #channel)
-        </p>
-      </div>
-      <div class="diagram-container">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          nodeTypes={nodeTypes}
-          fitView
-          fitViewOptions={{ padding: 0.3 }}
-          defaultEdgeOptions={{
-            animated: true,
-            style: { stroke: "#555", strokeWidth: 1.5 },
-          }}
-        >
-          <Background color="#222" gap={20} />
-          <Controls />
-        </ReactFlow>
-      </div>
-    </div>
-  );
-}
-
-renderPage("map", <App />);
+renderPage("home", <Home />, { crumbs: [{ label: "Overview" }] });

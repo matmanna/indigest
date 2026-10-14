@@ -4,7 +4,7 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import * as schema from "../src/db/schema";
 
 const sql = postgres(process.env.TEST_DATABASE_URL || "postgres://indigest:indigest@localhost:5433/indigest_test", { max: 1 });
-const tables = [schema.channels, schema.messages, schema.subscriptions, schema.botActions, schema.apiKeys, schema.apiKeyChannels, schema.authUser, schema.authSession, schema.authAccount, schema.authVerification];
+const tables = [schema.channels, schema.messages, schema.subscriptions, schema.botActions, schema.apiKeys, schema.apiKeyChannels, schema.authUser, schema.authSession, schema.authAccount, schema.authVerification, schema.auditLog];
 
 function kind(type: string): string {
   if (type.includes("character") || type === "text") return "text";

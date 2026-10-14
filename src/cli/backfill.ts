@@ -33,6 +33,7 @@ import { getDb } from "../db";
 import * as q from "../db/queries";
 import {
   resolveSlackMrkdwn,
+  extractMessageMrkdwn,
   extractMessageText,
   resolveMessageTimestamp,
   resolveStoredAuthors,
@@ -208,6 +209,7 @@ async function processMessage(ctx: Ctx, msg: any): Promise<Outcome> {
     userId: storedAuthors.userId,
     userName: storedAuthors.userName,
     text: resolveSlackMrkdwn(extractMessageText(msg)),
+    formattedText: extractMessageMrkdwn(msg),
     timestamp: storedTimestamp,
     metadata: {},
   });

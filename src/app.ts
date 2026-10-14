@@ -21,6 +21,8 @@ import { getDb } from "./db";
 import * as schema from "./db/schema";
 import { eq } from "drizzle-orm";
 import * as q from "./db/queries";
+import { graphCache, invalidateGraphCache } from "./lib/graph-cache";
+import { auditActions, recordAudit } from "./lib/audit";
 import type {
   Channel as StoreChannel,
   Message as StoreMessage,
@@ -72,13 +74,66 @@ export function resolveSlackMrkdwn(text: string): string {
 }
 
 export function extractMessageText(msg: any): string {
+  return walkMessageText(msg, false);
+}
+
+/**
+ * The same text as extractMessageText, taken from the same blocks,
+ * attachments or fallback, but kept as Slack mrkdwn: rich text styles,
+ * lists, quotes, code blocks, labelled links and channel references survive.
+ * Only formatting differs; broadcasts (<!here> and friends) are dropped as
+ * resolveSlackMrkdwn drops them from text.
+ */
+export function extractMessageMrkdwn(msg: any): string {
+  return walkMessageText(msg, true)
+    .replace(/<!here>/g, "")
+    .replace(/<!channel>/g, "")
+    .replace(/<!everyone>/g, "");
+}
+
+// Escapes text the way Slack does inside mrkdwn.
+function escapeMrkdwn(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Wraps styled text in mrkdwn markers. Markers must touch the text, so
+// surrounding whitespace stays outside them.
+function styleMrkdwn(text: string, style: any): string {
+  if (!style || !text.trim()) return text;
+  const [, lead, core, trail] = text.match(/^(\s*)([\s\S]*?)(\s*)$/)!;
+  let out = core!;
+  if (style.code) {
+    out = `\`${out}\``;
+  } else {
+    if (style.strike) out = `~${out}~`;
+    if (style.italic) out = `_${out}_`;
+    if (style.bold) out = `*${out}*`;
+  }
+  return `${lead}${out}${trail}`;
+}
+
+const sameStyle = (a: any, b: any) =>
+  Boolean(a?.bold) === Boolean(b?.bold) &&
+  Boolean(a?.italic) === Boolean(b?.italic) &&
+  Boolean(a?.strike) === Boolean(b?.strike) &&
+  Boolean(a?.code) === Boolean(b?.code);
+
+function walkMessageText(msg: any, format: boolean): string {
   if (msg.blocks && msg.blocks.length > 0) {
     const parts: string[] = [];
     for (const block of msg.blocks) {
       if (block.type === "section" && block.text?.text) {
-        parts.push(block.text.text);
+        parts.push(
+          format && block.text.type === "plain_text"
+            ? escapeMrkdwn(block.text.text)
+            : block.text.text,
+        );
       } else if (block.type === "rich_text" && block.elements) {
-        const richInline = (elements: any[]): string => {
+        const richInline = (elements: any[], plain = false): string => {
+          if (format) return richMrkdwn(elements, plain);
           let out = "";
           for (const el of elements) {
             if (typeof el.text === "string" && el.text) {
@@ -99,6 +154,55 @@ export function extractMessageText(msg: any): string {
           }
           return out;
         };
+        // The mrkdwn of inline elements. Neighbours that share a style,
+        // links included, are wrapped once, so an italic sentence with a
+        // link in it reads _see <url|this>_ rather than broken markers.
+        const richMrkdwn = (elements: any[], plain: boolean): string => {
+          const pieces: { text: string; style?: any }[] = [];
+          for (const el of elements) {
+            let text = "";
+            if (el.type === "link") {
+              text = el.url
+                ? `<${el.url}${
+                  el.text && el.text !== el.url
+                    ? `|${escapeMrkdwn(el.text).replace(/\|/g, "¦")}`
+                    : ""
+                }>`
+                : escapeMrkdwn(el.text || "");
+            } else if (typeof el.text === "string" && el.text) {
+              text = escapeMrkdwn(el.text);
+            } else if (el.type === "emoji" && el.name) {
+              text = `:${el.name}:`;
+            } else if (el.type === "user") {
+              text = `<@${el.user_id}>`;
+            } else if (el.type === "channel") {
+              text = `<#${el.channel_id}>`;
+            } else if (el.type === "line_break") {
+              text = "\n";
+            } else if (Array.isArray(el.elements)) {
+              text = richMrkdwn(el.elements, plain);
+              pieces.push({ text });
+              continue;
+            }
+            if (text) pieces.push({ text, style: plain ? undefined : el.style });
+          }
+
+          let out = "";
+          for (let i = 0; i < pieces.length; ) {
+            const style = pieces[i]!.style;
+            let run = "";
+            while (i < pieces.length && sameStyle(pieces[i]!.style, style)) {
+              run += pieces[i]!.text;
+              i += 1;
+            }
+            // A run may span lines; markers cannot, so each line is wrapped.
+            out += run
+              .split("\n")
+              .map((line) => styleMrkdwn(line, style))
+              .join("\n");
+          }
+          return out;
+        };
         const extractRichText = (elements: any[]): string[] => {
           const richParts: string[] = [];
           for (const element of elements) {
@@ -107,11 +211,32 @@ export function extractMessageText(msg: any): string {
               element.type === "rich_text_preformatted" ||
               element.type === "rich_text_quote"
             ) {
-              richParts.push(richInline(element.elements));
-            } else if (element.type === "rich_text_list") {
-              for (const item of element.elements || []) {
-                richParts.push(richInline(item.elements));
+              if (!format || element.type === "rich_text_section") {
+                richParts.push(richInline(element.elements));
+              } else if (element.type === "rich_text_preformatted") {
+                richParts.push(`\`\`\`${richInline(element.elements, true)}\`\`\``);
+              } else {
+                richParts.push(
+                  richInline(element.elements)
+                    .split("\n")
+                    .map((line) => `> ${line}`)
+                    .join("\n"),
+                );
               }
+            } else if (element.type === "rich_text_list") {
+              const indent = "    ".repeat(Math.max(0, element.indent || 0));
+              (element.elements || []).forEach((item: any, index: number) => {
+                const text = richInline(item.elements);
+                if (!format) {
+                  richParts.push(text);
+                  return;
+                }
+                const marker =
+                  element.style === "ordered"
+                    ? `${(element.offset || 0) + index + 1}.`
+                    : "•";
+                richParts.push(`${indent}${marker} ${text}`);
+              });
             } else if (Array.isArray(element.elements)) {
               richParts.push(...extractRichText(element.elements));
             }
@@ -121,8 +246,10 @@ export function extractMessageText(msg: any): string {
         parts.push(...extractRichText(block.elements));
       } else if (block.type === "context" && block.elements) {
         for (const el of block.elements) {
-          if (el.type === "mrkdwn" || el.type === "plain_text") {
+          if (el.type === "mrkdwn") {
             parts.push(el.text);
+          } else if (el.type === "plain_text") {
+            parts.push(format ? escapeMrkdwn(el.text) : el.text);
           }
         }
       }
@@ -147,8 +274,11 @@ export function extractMessageText(msg: any): string {
     if (parts.length > 0) return parts.join("\n");
   }
   if (msg.message && typeof msg.message === "object") {
-    const nestedText = extractMessageText(msg.message);
-    if (nestedText) return nestedText;
+    const nestedText = walkMessageText(msg.message, format);
+    // The fallback below must trigger exactly when it does for plain text.
+    if (format ? walkMessageText(msg.message, false) : nestedText) {
+      return nestedText;
+    }
   }
   return msg.text || "";
 }
@@ -716,6 +846,73 @@ export async function resolveForwardText(
   return liveText;
 }
 
+/**
+ * resolveForwardText, plus the matching formatted text. When a different
+ * stored record wins, formattedText is left undefined so the stored one is
+ * kept: text and formatted text always come from the same version.
+ */
+export async function resolveForwardContent(
+  db: any,
+  channelId: string,
+  messageTs: string,
+  liveText: string,
+  liveFormattedText: string,
+): Promise<{ text: string; formattedText?: string }> {
+  const stored = await q.getMessageBySlackTs(db, channelId, messageTs);
+  if (stored?.text && stored.text.length >= liveText.length) {
+    // Identical text is the same version, so its formatting can be filled
+    // in, which also backfills messages stored before formatted text.
+    return stored.text === liveText
+      ? { text: stored.text, formattedText: liveFormattedText }
+      : { text: stored.text };
+  }
+  return { text: liveText, formattedText: liveFormattedText };
+}
+
+/** The bot's prompt once a message is approved. */
+export function approvedPromptBlocks(
+  messageTs: string,
+  hasMetadataSchema: boolean,
+): any[] {
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "✅ *Message approved and added to the feed!*",
+      },
+    },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          action_id: "indigest_no",
+          text: { type: "plain_text", text: "Undo" },
+          style: "danger" as const,
+          value: messageTs,
+        },
+        ...(hasMetadataSchema
+          ? [
+            {
+              type: "button",
+              action_id: "indigest_edit_metadata",
+              text: { type: "plain_text", text: "Edit metadata" },
+              value: messageTs,
+            },
+          ]
+          : []),
+        {
+          type: "button",
+          action_id: "indigest_refresh",
+          text: { type: "plain_text", text: "Refresh" },
+          value: messageTs,
+        },
+      ],
+    },
+  ];
+}
+
 export function canEditBotMessage(
   userId: string,
   lockdownUsers: string[],
@@ -1254,6 +1451,10 @@ app.use("/api/*", async (c, next) => {
       .split(",")
       .map((s: string) => s.trim())
       .filter(Boolean),
+    request: {
+      ip: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || null,
+      userAgent: c.req.header("user-agent") || null,
+    },
   };
 
   const { matched: openMatched, response: openResponse } =
@@ -1983,6 +2184,7 @@ app.post("/events", async (c) => {
             userId: storedAuthors.userId,
             userName: storedAuthors.userName,
             text,
+            formattedText: extractMessageMrkdwn(ev),
             timestamp: storedTimestamp,
             metadata,
           });
@@ -2129,6 +2331,7 @@ app.post("/events", async (c) => {
                 userId: parentMsg.user || "",
                 userName: parentUserName,
                 text: resolveSlackMrkdwn(extractMessageText(parentMsg)),
+                formattedText: extractMessageMrkdwn(parentMsg),
                 timestamp: slackTsToTime(ev.thread_ts!).toISOString(),
                 metadata: {},
               });
@@ -2149,6 +2352,8 @@ app.post("/events", async (c) => {
           userId: ev.user,
           userName,
           text: resolveSlackMrkdwn(ev.text),
+          // The reply's text comes from ev.text alone, so its mrkdwn does too.
+          formattedText: extractMessageMrkdwn({ text: ev.text }),
           timestamp: slackTsToTime(ev.ts).toISOString(),
           metadata: {},
         });
@@ -2556,12 +2761,14 @@ app.post("/interactions", async (c) => {
           );
 
           const liveText = resolveSlackMrkdwn(extractMessageText(msg));
-          const forwardText = await resolveForwardText(
-            db,
-            channelId,
-            messageTs,
-            liveText,
-          );
+          const { text: forwardText, formattedText } =
+            await resolveForwardContent(
+              db,
+              channelId,
+              messageTs,
+              liveText,
+              extractMessageMrkdwn(msg),
+            );
 
           await q.upsertMessage(db, {
             slackTs: messageTs,
@@ -2569,6 +2776,7 @@ app.post("/interactions", async (c) => {
             userId: storedAuthors.userId,
             userName: storedAuthors.userName,
             text: forwardText,
+            formattedText,
             timestamp: storedTimestamp,
             metadata,
           });
@@ -2677,35 +2885,10 @@ app.post("/interactions", async (c) => {
                 channel: channelId,
                 ts: botMessageTs,
                 text: "✅ Message approved and added to the feed!",
-                blocks: [
-                  {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: "✅ *Message approved and added to the feed!*",
-                    },
-                  },
-                  {
-                    type: "actions",
-                    elements: [
-                      {
-                        type: "button",
-                        action_id: "indigest_no",
-                        text: { type: "plain_text", text: "Undo" },
-                        style: "danger" as const,
-                        value: messageTs,
-                      },
-                      ...(channel.metadataSchema
-                        ? [{
-                          type: "button",
-                          action_id: "indigest_edit_metadata",
-                          text: { type: "plain_text", text: "Edit metadata" },
-                          value: messageTs,
-                        }]
-                        : []),
-                    ],
-                  },
-                ],
+                blocks: approvedPromptBlocks(
+                  messageTs,
+                  Boolean(channel.metadataSchema),
+                ),
               } as any);
             } catch (err: any) {
               console.error(
@@ -2885,11 +3068,15 @@ app.post("/interactions", async (c) => {
                 }
               }
 
-              const backfillText = await resolveForwardText(
+              const {
+                text: backfillText,
+                formattedText: backfillFormattedText,
+              } = await resolveForwardContent(
                 db,
                 channelId,
                 messageTs,
                 resolveSlackMrkdwn(extractMessageText(msg)),
+                extractMessageMrkdwn(msg),
               );
 
               await q.upsertMessage(db, {
@@ -2898,6 +3085,7 @@ app.post("/interactions", async (c) => {
                 userId: storedAuthors.userId,
                 userName: storedAuthors.userName,
                 text: backfillText,
+                formattedText: backfillFormattedText,
                 timestamp: storedTimestamp,
                 metadata,
               });
@@ -3125,11 +3313,15 @@ app.post("/interactions", async (c) => {
             userName,
           );
 
-          const approvedText = await resolveForwardText(
+          const {
+            text: approvedText,
+            formattedText: approvedFormattedText,
+          } = await resolveForwardContent(
             db,
             channelId,
             messageTs,
             resolveSlackMrkdwn(extractMessageText(msg)),
+            extractMessageMrkdwn(msg),
           );
 
           await q.upsertMessage(db, {
@@ -3138,6 +3330,7 @@ app.post("/interactions", async (c) => {
                 userId: storedAuthors.userId,
                 userName: storedAuthors.userName,
                 text: approvedText,
+                formattedText: approvedFormattedText,
                 timestamp: storedTimestamp,
             metadata: {},
           });
@@ -3170,35 +3363,10 @@ app.post("/interactions", async (c) => {
                 channel: channelId,
                 ts: botMessageTs,
                 text: "✅ Message approved and added to the feed!",
-                blocks: [
-                  {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: "✅ *Message approved and added to the feed!*",
-                    },
-                  },
-                  {
-                    type: "actions",
-                    elements: [
-                      {
-                        type: "button",
-                        action_id: "indigest_no",
-                        text: { type: "plain_text", text: "Undo" },
-                        style: "danger" as const,
-                        value: messageTs,
-                      },
-                      ...(ch.metadataSchema
-                        ? [{
-                          type: "button",
-                          action_id: "indigest_edit_metadata",
-                          text: { type: "plain_text", text: "Edit metadata" },
-                          value: messageTs,
-                        }]
-                        : []),
-                    ],
-                  },
-                ],
+                blocks: approvedPromptBlocks(
+                  messageTs,
+                  Boolean(ch.metadataSchema),
+                ),
               } as any);
             } catch (err: any) {
               console.error(
@@ -3220,6 +3388,120 @@ app.post("/interactions", async (c) => {
           await slackResponse(responseUrl, "");
         } catch (err: any) {
           await slackResponse(responseUrl, `Error: ${err.message}`);
+        }
+      } else if (action.action_id === "indigest_refresh") {
+        // Re-reads an approved message from Slack and stores it again, so
+        // edits made after approval, or changes to how Indigest stores
+        // messages, reach the feed. Metadata is kept; nothing is forwarded.
+        const clickingUser = cb.user?.id || "";
+        const lockdownUsers = (env.LOCKDOWN_USERS || "")
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter(Boolean);
+        const isLockdown = lockdownUsers.includes(clickingUser);
+        const isManager = isLockdown
+          ? false
+          : await isChannelManager(channelId, clickingUser, slack);
+        const stored = await q.getMessageBySlackTs(db, channelId, messageTs);
+        if (!stored) {
+          await slack.chat.postEphemeral({
+            channel: channelId,
+            user: clickingUser,
+            text: "❌ This message isn't in the feed, so there's nothing to refresh.",
+          });
+          return;
+        }
+        if (!canApproveMessage({
+          approvedPosters: ch.approvedPosters,
+          clickingUser,
+          messageUser: stored.userId,
+          isManager,
+          isLockdown,
+        })) {
+          await slack.chat.postEphemeral({
+            channel: channelId,
+            user: clickingUser,
+            text: "❌ You don't have permission to refresh this message.",
+          });
+          return;
+        }
+
+        try {
+          const history = await slack.conversations.history({
+            channel: channelId,
+            latest: messageTs,
+            limit: 1,
+            inclusive: true,
+          });
+          const msg = history.messages?.[0] as any;
+          if (!msg || msg.ts !== messageTs) {
+            await slack.chat.postEphemeral({
+              channel: channelId,
+              user: clickingUser,
+              text: "❌ Couldn't fetch that message from Slack.",
+            });
+            return;
+          }
+
+          const text = resolveSlackMrkdwn(extractMessageText(msg));
+          // Never let a failed read wipe what the feed already has.
+          if (!text.trim() && stored.text.trim()) {
+            await slack.chat.postEphemeral({
+              channel: channelId,
+              user: clickingUser,
+              text: "❌ Slack returned no text for this message, so the stored version was kept.",
+            });
+            return;
+          }
+
+          let userName = msg.user || "";
+          try {
+            const u = await slack.users.info({ user: msg.user });
+            userName = (u.user as any)?.name || userName;
+          } catch { }
+          const storedAuthors = resolveStoredAuthors(
+            msg,
+            msg.user || "",
+            userName,
+          );
+
+          await q.upsertMessage(db, {
+            slackTs: messageTs,
+            channelId,
+            threadTs: stored.threadTs,
+            userId: storedAuthors.userId,
+            userName: storedAuthors.userName,
+            text,
+            formattedText: extractMessageMrkdwn(msg),
+            timestamp: resolveMessageTimestamp(
+              msg,
+              messageTs,
+              stored.timestamp,
+            ),
+            metadata: stored.metadata,
+          });
+          await q.addBotAction(db, {
+            type: "refresh",
+            sourceChannelId: channelId,
+            sourceMessageTs: messageTs,
+            botChannelId: channelId,
+            botMessageTs: botMessageTs || "0",
+            userId: clickingUser,
+            command: "indigest_refresh",
+            createdAt: "",
+          });
+          await slack.chat.postEphemeral({
+            channel: channelId,
+            user: clickingUser,
+            text: "🔄 Refreshed this message from Slack.",
+          });
+        } catch (err: any) {
+          console.error("indigest_refresh failed:", err.message);
+          await slack.chat.postEphemeral({
+            channel: channelId,
+            user: clickingUser,
+            text: `❌ Error refreshing message: ${err.message}`,
+          });
         }
       } else if (action.action_id === "indigest_no") {
         const clickingUser = cb.user?.id || "";
@@ -3431,7 +3713,35 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
     }
   };
 
+  // Updated once the command's target channel is resolved.
+  let commandTarget = sourceChannelId;
+  const userName = form.get("user_name") || undefined;
+  const auditCommand = (
+    db: any,
+    command: string,
+    outcome: "success" | "denied" = "success",
+    reason?: string,
+  ) =>
+    recordAudit(
+      db,
+      auditActions.channelCommand({
+        actor: { type: "user", id: userId, displayName: userName },
+        target: { id: commandTarget },
+        outcome,
+        reason,
+      }),
+      {
+        source: "slack",
+        actorSlackId: userId,
+        command: `/in ${command}`,
+        ranIn: sourceChannelId,
+      },
+    );
+
   const logCommand = async (command: string, db: any) => {
+    // Any logged command may change what the feed map shows.
+    invalidateGraphCache();
+    await auditCommand(db, command);
     try {
       await db.insert(schema.botActions).values({
         type: "command",
@@ -3498,6 +3808,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
         rest = text;
       }
 
+      commandTarget = targetChannelId;
       let ch = await q.getChannel(db, targetChannelId);
       if (!ch) {
         let name = targetChannelId;
@@ -3536,9 +3847,14 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
       console.log(
         `Slash command: user=${userId} channel=${targetChannelId} cmd=${cmd} subcmd=${subcmd} arg=${arg}`,
       );
-      const targetManager = () =>
-        lockdownUsers.includes(userId) ||
-        isChannelManager(targetChannelId, userId, slack);
+      const targetManager = async () => {
+        const ok =
+          lockdownUsers.includes(userId) ||
+          (await isChannelManager(targetChannelId, userId, slack));
+        if (!ok)
+          await auditCommand(db, rest, "denied", "not a channel manager");
+        return ok;
+      };
 
       if (
         lockdownUsers.length > 0 &&
@@ -3546,6 +3862,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
         cmd !== "status" &&
         cmd !== ""
       ) {
+        await auditCommand(db, rest, "denied", "lockdown mode");
         await respond(
           "🔒 indigest is in lockdown mode. Only authorized users can run commands.",
         );
@@ -3612,7 +3929,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           return;
         }
         await q.removeSubscription(db, sourceChannelId, sourceId);
-        cachedGraph = null;
+        invalidateGraphCache();
         await logCommand(`unsub #${sourceName}`, db);
         await respond(`📰 Unsubscribed from #${sourceName}.`);
       };
@@ -3950,7 +4267,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           }
 
           await q.addSubscription(db, sourceChannelId, sourceId);
-          cachedGraph = null;
+          invalidateGraphCache();
           await logCommand(`sub #${sourceName}`, db);
           await respond(
             `📰 Subscribed to #${sourceName}. Messages pub'd there will be forwarded here.`,
@@ -4502,14 +4819,14 @@ app.get("/api/channels/:id", async (c) => {
 });
 
 // --- Graph API (for React Flow diagram) ---
-let cachedGraph: { data: any; at: number } | null = null;
 const GRAPH_CACHE_TTL = 60_000; // 1 minute
 
 app.get("/api/graph", async (c) => {
   const env = c.env;
 
+  const cachedGraph = graphCache.value;
   if (cachedGraph && Date.now() - cachedGraph.at < GRAPH_CACHE_TTL) {
-    return c.json(cachedGraph.data);
+    return c.json(cachedGraph.data as any);
   }
 
   const db = getDb(getDbUrl(env));
@@ -4640,7 +4957,7 @@ app.get("/api/graph", async (c) => {
   }
 
   const result = { data: { nodes, edges } };
-  cachedGraph = { data: result, at: Date.now() };
+  graphCache.value = { data: result, at: Date.now() };
   return c.json(result);
 });
 
