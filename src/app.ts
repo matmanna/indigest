@@ -983,6 +983,19 @@ export function resolveSubProfileValue(
   return null;
 }
 
+/**
+ * Render a channel's static metadata as bold mrkdwn, one row per line, for
+ * the top of every forward. Returns "" when there is nothing to show.
+ */
+export function formatStaticMetadata(staticMetadata: string | undefined): string {
+  return (staticMetadata || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => `*${line.replace(/^\*+|\*+$/g, "")}*`)
+    .join("\n");
+}
+
 export function findExistingForward(
   actions: q.BotAction[],
   subscriberChannelId: string,
@@ -1263,6 +1276,16 @@ export async function forwardToSubscribers(
     const metadataSection = metadataLines.length
       ? metadataLines.join("\n") + "\n"
       : "";
+    const staticSection = formatStaticMetadata(sourceChannel.staticMetadata);
+    const staticBlocks = staticSection
+      ? [
+        {
+          type: "section",
+          block_id: "indigest_static_metadata",
+          text: { type: "mrkdwn", text: staticSection },
+        },
+      ]
+      : [];
 
     console.log(
       "metadata:",
@@ -1278,10 +1301,11 @@ export async function forwardToSubscribers(
           icon_url: effectiveIcon,
           unfurl_links: false,
           unfurl_media: false,
-          text: metadataSection
-            ? metadataSection.trim() + "\n" + footerText
-            : footerText,
+          text: [staticSection, metadataSection.trim(), footerText]
+            .filter(Boolean)
+            .join("\n"),
           blocks: [
+            ...staticBlocks,
             ...(metadataSection
               ? [
                 {
@@ -1323,12 +1347,13 @@ export async function forwardToSubscribers(
         : forwardLink
           ? `<${forwardLink}|🔗 View forwarded message>`
           : msg.text || "_[no text]_";
-      const blocks: any[] = chunkLongText(messageText, MAX_BLOCK_TEXT).map(
-        (chunk) => ({
+      const blocks: any[] = [
+        ...staticBlocks,
+        ...chunkLongText(messageText, MAX_BLOCK_TEXT).map((chunk) => ({
           type: "section",
           text: { type: "mrkdwn", text: chunk },
-        }),
-      );
+        })),
+      ];
       if (metadataSection) {
         blocks.push({
           type: "section",
@@ -1342,11 +1367,13 @@ export async function forwardToSubscribers(
         icon_url: effectiveIcon,
         unfurl_links: false,
         unfurl_media: false,
-        text: (originalText
-          ? `📰 *${effectiveUsername}* in #${sourceChannel.name}:\n${originalText}`
-          : forwardLink
-            ? `📰 Forwarded from #${sourceChannel.name}\n${forwardLink}`
-            : `📰 *${displayName}* in #${sourceChannel.name}:\n${msg.text}`
+        text: (
+          (staticSection ? staticSection + "\n" : "") +
+          (originalText
+            ? `📰 *${effectiveUsername}* in #${sourceChannel.name}:\n${originalText}`
+            : forwardLink
+              ? `📰 Forwarded from #${sourceChannel.name}\n${forwardLink}`
+              : `📰 *${displayName}* in #${sourceChannel.name}:\n${msg.text}`)
         ).slice(0, MAX_MESSAGE_TEXT),
         blocks,
       };
@@ -2098,6 +2125,7 @@ app.post("/events", async (c) => {
           metadataSchema: "",
           metadataRequired: false,
           properties: "",
+          staticMetadata: "",
           createdAt: "",
         };
         await q.upsertChannel(db, ch);
@@ -2952,7 +2980,10 @@ app.post("/interactions", async (c) => {
               block.type === "context" ||
               block.block_id === "indigest_metadata",
           );
-          update.blocks = [...edited, ...contextAndMetadata];
+          const staticMetadata = blocks.filter(
+            (block: any) => block.block_id === "indigest_static_metadata",
+          );
+          update.blocks = [...staticMetadata, ...edited, ...contextAndMetadata];
         }
         await slack.chat.update(update);
         return;
@@ -3835,6 +3866,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           metadataSchema: "",
           metadataRequired: false,
           properties: "",
+          staticMetadata: "",
           createdAt: "",
         };
         await q.upsertChannel(db, ch);
@@ -4382,7 +4414,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
         default: {
           if (!cmd) {
             await respond(
-              "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest (alias: \`pub off\`)\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual [@user]\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`sub off #channel\` — unsubscribe from another channel's feed\n• \`sub pfp #source <value>\` | \`sub name #source <value>\` — set per-source profile overrides\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\` | \`schema required on|off\`\n• \`prop set <json>\` | \`prop get\` | \`prop clear\` — channel properties",
+              "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest (alias: \`pub off\`)\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual [@user]\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`sub off #channel\` — unsubscribe from another channel's feed\n• \`sub pfp #source <value>\` | \`sub name #source <value>\` — set per-source profile overrides\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\` | \`schema required on|off\`\n• \`prop set <json>\` | \`prop get\` | \`prop clear\` — channel properties\n• \`static set <text>\` | \`static get\` | \`static clear\` — bold line above every forward",
             );
             return;
           }
@@ -4524,6 +4556,40 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
             return;
           }
 
+          if (cmd === "static") {
+            if (subcmd === "get" || (!subcmd && !arg)) {
+              await respond(
+                ch.staticMetadata
+                  ? `Static metadata shown above every forward:\n${formatStaticMetadata(ch.staticMetadata)}`
+                  : "No static metadata configured for this channel.",
+              );
+              return;
+            }
+
+            if (subcmd === "clear") {
+              ch.staticMetadata = "";
+              await q.upsertChannel(db, ch);
+              await logCommand("static clear", db);
+              await respond("Static metadata cleared.");
+              return;
+            }
+
+            if (subcmd === "set" && arg.trim()) {
+              ch.staticMetadata = arg.trim().slice(0, 2000);
+              await q.upsertChannel(db, ch);
+              await logCommand("static set", db);
+              await respond(
+                `📰 Static metadata set. Forwards will now start with:\n${formatStaticMetadata(ch.staticMetadata)}`,
+              );
+              return;
+            }
+
+            await respond(
+              "Usage: \`/in static set <text>\` | \`/in static get\` | \`/in static clear\`",
+            );
+            return;
+          }
+
           if (cmd === "prop") {
             if (subcmd === "get") {
               if (!ch.properties || ch.properties === "{}") {
@@ -4659,7 +4725,7 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
           }
 
           await respond(
-            "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest (alias: \`pub off\`)\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual [@user]\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`sub off #channel\` — unsubscribe from another channel's feed\n• \`sub pfp #source <value>\` | \`sub name #source <value>\` — set per-source profile overrides\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\`\n• \`prop set <json>\` | \`prop get\` | \`prop clear\` — channel properties",
+            "Commands:\n• \`pub [#channel]\` — enable indigest\n• \`unpub [#channel]\` — disable indigest (alias: \`pub off\`)\n• \`pub auto [@user]\` — auto-approve mode\n• \`pub manual [@user]\` — manual approve mode\n• \`pub replies\` — track thread replies\n• \`sub #channel\` — subscribe to another channel's feed\n• \`sub off #channel\` — unsubscribe from another channel's feed\n• \`sub pfp #source <value>\` | \`sub name #source <value>\` — set per-source profile overrides\n• \`unsub #channel\` — unsubscribe from a channel\n• \`perms @user\` — set who can approve messages\n• \`status [#channel]\` — show status\n• \`webhook <url>\` — set webhook\n• \`schema set <json>\` | \`schema get\` | \`schema clear\`\n• \`prop set <json>\` | \`prop get\` | \`prop clear\` — channel properties\n• \`static set <text>\` | \`static get\` | \`static clear\` — bold line above every forward",
           );
         }
       }
