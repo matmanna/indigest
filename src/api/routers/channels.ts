@@ -38,6 +38,7 @@ const channelSchema = z.object({
   metadataSchema: z.string(),
   metadataRequired: z.boolean(),
   properties: z.string(),
+  staticMetadata: z.string(),
   createdAt: z.string(),
 });
 
@@ -98,6 +99,7 @@ const channelPatchSchema = z.object({
   metadataSchema: metadataSchemaSchema.optional(),
   metadataRequired: z.boolean().optional(),
   properties: propertiesSchema.optional(),
+  staticMetadata: z.string().max(2000).optional(),
 });
 
 export type ChannelPatch = z.infer<typeof channelPatchSchema>;
@@ -113,6 +115,8 @@ export function applyChannelPatch(ch: Channel, patch: ChannelPatch): Channel {
     next.metadataSchema = patch.metadataSchema
       ? JSON.stringify(JSON.parse(patch.metadataSchema))
       : "";
+  if (patch.staticMetadata !== undefined)
+    next.staticMetadata = patch.staticMetadata.trim();
   if (patch.properties !== undefined)
     next.properties = patch.properties
       ? JSON.stringify(JSON.parse(patch.properties))
@@ -296,6 +300,7 @@ export const publishChannel = authRequiredProcedure
         metadataSchema: "",
         metadataRequired: false,
         properties: "",
+        staticMetadata: "",
         createdAt: "",
       };
     }
