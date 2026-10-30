@@ -12,6 +12,7 @@ import {
 import {
   articleKeyFromCardText,
   commentUsage,
+  editedAtFromMetadata,
   normalizeArticleKey,
   validCommentTimestamps,
   type CommentLimits,
@@ -179,6 +180,9 @@ export const getThread = authOrApiKeyProcedure
           text: m.text,
           formattedText: m.formattedText ?? null,
           timestamp: m.timestamp,
+          ...(editedAtFromMetadata(m.metadata)
+            ? { editedAt: editedAtFromMetadata(m.metadata) }
+            : {}),
         })),
         ...(viewer ? { viewer } : {}),
       },

@@ -1,10 +1,17 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, mock, test } from "bun:test";
 
 const channel = (id: string, accessPermUsers: string[]) => ({
   id,
   name: id,
   enabled: true,
   accessPermUsers,
+});
+
+// Copy the real exports first: the mock below is process-wide, and the
+// database tests need the real queries back once this file is done.
+const realQueries = { ...(await import("../src/db/queries")) };
+afterAll(() => {
+  mock.module("../src/db/queries", () => realQueries);
 });
 
 mock.module("../src/db/queries", () => ({

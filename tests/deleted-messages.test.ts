@@ -331,7 +331,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("deleted messages: database", ()
       await seedThread();
       const slack = slackReturning([[{ ts: "1.01" }], [{ ts: "1.03" }]]);
       const result = await reconcileThreadDeletions(db, slack, channelId, "1.01");
-      expect(result).toEqual({ deleted: ["1.02"], complete: true });
+      expect(result).toEqual({ deleted: ["1.02"], edited: [], complete: true });
       expect(slack.calls).toBe(2);
       expect(await everythingReadable()).not.toContain(SECRET);
       expect((await q.getMessages(db, channelId)).map((m) => m.slackTs).sort()).toEqual(["1.01", "1.03"]);
@@ -342,7 +342,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("deleted messages: database", ()
       const first = await reconcileThreadDeletions(db, slackReturning([[{ ts: "1.01" }, { ts: "1.03" }]]), channelId, "1.01");
       const second = await reconcileThreadDeletions(db, slackReturning([[{ ts: "1.01" }, { ts: "1.03" }]]), channelId, "1.01");
       expect(first.deleted).toEqual(["1.02"]);
-      expect(second).toEqual({ deleted: [], complete: true });
+      expect(second).toEqual({ deleted: [], edited: [], complete: true });
     });
 
     test("marks nothing when Slack errors, so a live comment is never hidden by a failure", async () => {
@@ -354,13 +354,13 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("deleted messages: database", ()
           },
         },
       };
-      expect(await reconcileThreadDeletions(db, failing, channelId, "1.01")).toEqual({ deleted: [], complete: false });
+      expect(await reconcileThreadDeletions(db, failing, channelId, "1.01")).toEqual({ deleted: [], edited: [], complete: false });
       expect(await q.getMessageCount(db, channelId)).toBe(3);
     });
 
     test("marks nothing on an empty answer or when pages never end", async () => {
       await seedThread();
-      expect(await reconcileThreadDeletions(db, slackReturning([[]]), channelId, "1.01")).toEqual({ deleted: [], complete: false });
+      expect(await reconcileThreadDeletions(db, slackReturning([[]]), channelId, "1.01")).toEqual({ deleted: [], edited: [], complete: false });
       const endless: RepliesClient = {
         conversations: {
           async replies() {
@@ -368,7 +368,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("deleted messages: database", ()
           },
         },
       };
-      expect(await reconcileThreadDeletions(db, endless, channelId, "1.01")).toEqual({ deleted: [], complete: false });
+      expect(await reconcileThreadDeletions(db, endless, channelId, "1.01")).toEqual({ deleted: [], edited: [], complete: false });
       expect(await q.getMessageCount(db, channelId)).toBe(3);
     });
 
@@ -389,7 +389,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("deleted messages: database", ()
           },
         },
       };
-      expect(await reconcileThreadDeletions(db, gone, channelId, "1.01")).toEqual({ deleted: ["1.01"], complete: true });
+      expect(await reconcileThreadDeletions(db, gone, channelId, "1.01")).toEqual({ deleted: ["1.01"], edited: [], complete: true });
       expect((await q.getMessages(db, channelId)).map((m) => m.slackTs).sort()).toEqual(["1.02", "1.03"]);
     });
   });

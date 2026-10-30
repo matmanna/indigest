@@ -348,6 +348,58 @@ export async function markMessageDeleted(
 }
 
 /**
+ * Replaces the text of a stored thread reply after Slack reports it edited,
+ * and records when. Only replies: edits to published top-level messages are
+ * not applied. Returns whether a row changed; deleted replies never do.
+ */
+export async function updateReplyContent(
+  db: DB,
+  channelId: string,
+  slackTs: string,
+  content: { text: string; formattedText: string | null; editedAt: Date },
+): Promise<boolean> {
+  const rows = await db
+    .update(schema.messages)
+    .set({
+      text: content.text,
+      formattedText: content.formattedText,
+      metadata: sql`(COALESCE(NULLIF(${schema.messages.metadata}, ''), '{}')::jsonb || jsonb_build_object('editedAt', ${content.editedAt.toISOString()}::text))::text`,
+    })
+    .where(
+      and(
+        eq(schema.messages.channelId, channelId),
+        eq(schema.messages.slackTs, slackTs),
+        sql`${schema.messages.threadTs} IS NOT NULL`,
+        notDeleted,
+      ),
+    )
+    .returning({ id: schema.messages.id });
+  return rows.length > 0;
+}
+
+/** The text of the stored, not deleted replies in a thread. */
+export async function getLiveReplyText(
+  db: DB,
+  channelId: string,
+  threadTs: string,
+): Promise<{ slackTs: string; text: string; formattedText: string | null }[]> {
+  return db
+    .select({
+      slackTs: schema.messages.slackTs,
+      text: schema.messages.text,
+      formattedText: schema.messages.formattedText,
+    })
+    .from(schema.messages)
+    .where(
+      and(
+        eq(schema.messages.channelId, channelId),
+        eq(schema.messages.threadTs, threadTs),
+        notDeleted,
+      ),
+    );
+}
+
+/**
  * Slack timestamps of the stored, not deleted messages in a thread: its
  * replies and its root.
  */

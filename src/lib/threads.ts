@@ -115,3 +115,67 @@ export function commentUsage(
     perDay: limits.perDay,
   };
 }
+
+// --- Which replies are comments ---
+
+export interface CommentConfig {
+  /** Channels where only replies under an article card are tracked. */
+  channels: Set<string>;
+  /**
+   * Who may post an article card: Slack user or bot IDs, and "self" for
+   * indigest's own bot.
+   */
+  cardBots: string[];
+}
+
+export function parseCommentConfig(env: {
+  COMMENT_CHANNELS?: string;
+  COMMENT_CARD_BOTS?: string;
+}): CommentConfig {
+  const list = (value?: string) =>
+    (value ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  const cardBots = list(env.COMMENT_CARD_BOTS);
+  return {
+    channels: new Set(list(env.COMMENT_CHANNELS)),
+    cardBots: cardBots.length > 0 ? cardBots : ["self"],
+  };
+}
+
+/** Whether a message was posted by one of the allowed card authors. */
+export function isCardAuthor(
+  author: { user?: string; bot_id?: string },
+  cardBots: string[],
+  self: { userId?: string; botId?: string },
+): boolean {
+  const ids = [author.user, author.bot_id].filter((id): id is string => !!id);
+  return ids.some(
+    (id) =>
+      cardBots.includes(id) ||
+      (cardBots.includes("self") && (id === self.userId || id === self.botId)),
+  );
+}
+
+/**
+ * A card's text with the links from its blocks added. A card's link often
+ * lives only in its blocks, not in its text, and the article is found by it.
+ */
+export function cardText(message: { text?: string; blocks?: unknown }): string {
+  const text = message.text ?? "";
+  const found = JSON.stringify(message.blocks ?? []).match(/https?:\/\/[^\s"<>|\\)]+/g) ?? [];
+  const extra = [...new Set(found)].filter((link) => !text.includes(link));
+  return extra.length > 0 ? `${text}\n${extra.join("\n")}` : text;
+}
+
+/** When a reply was last edited, from its stored metadata. */
+export function editedAtFromMetadata(metadata: unknown): string | undefined {
+  try {
+    const parsed = typeof metadata === "string" ? JSON.parse(metadata) : metadata;
+    const value = (parsed as { editedAt?: unknown } | null)?.editedAt;
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}

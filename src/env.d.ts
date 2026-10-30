@@ -8,6 +8,10 @@ interface Env {
   LOCKDOWN_USERS: string;
   HACK_CLUB_CDN_KEY: string;
   SLACK_CLIENT_ID: string;
+  // Channels where only replies under an article card are tracked, and who
+  // may post a card ("self" is indigest's own bot). See src/lib/threads.ts.
+  COMMENT_CHANNELS?: string;
+  COMMENT_CARD_BOTS?: string;
 
   // Hyperdrive binding
   HYPERDRIVE_BINDING: { connectionString: string };
