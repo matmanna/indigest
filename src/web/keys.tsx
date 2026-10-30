@@ -65,6 +65,46 @@ function ScopeCell({ channels }: { channels: BaseKey["channels"] }) {
   );
 }
 
+// Channels the key already covers stay pickable even when the list leaves
+// them out (an admin editing someone else's key, or access since lost), so
+// they can still be removed.
+function ChannelPicker({
+  channels,
+  loading,
+  selected,
+  setSelected,
+  current = [],
+}: {
+  channels: Channel[] | null | undefined;
+  loading: boolean;
+  selected: string[];
+  setSelected: (update: (prev: string[]) => string[]) => void;
+  current?: BaseKey["channels"];
+}) {
+  const options = [
+    ...(channels ?? []).map((ch) => ({ id: ch.id, name: ch.name })),
+    ...current.filter((c) => !channels?.some((ch) => ch.id === c.id)),
+  ];
+  return (
+    <div className="picker">
+      {loading && <Spinner />}
+      {channels && options.length === 0 && <span className="muted small">No channels available to you.</span>}
+      {options.map((ch) => (
+        <button
+          type="button"
+          key={ch.id}
+          className={"pick" + (selected.includes(ch.id) ? " selected" : "")}
+          onClick={() =>
+            setSelected((prev) => (prev.includes(ch.id) ? prev.filter((c) => c !== ch.id) : [...prev, ch.id]))
+          }
+        >
+          #{ch.name || ch.id}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function CreateKeyModal({
   open,
   onClose,
@@ -137,22 +177,12 @@ function CreateKeyModal({
             Channel scope <span className="optional">(optional)</span>
           </label>
           <span className="field-hint">Leave empty to follow each channel's own access rules.</span>
-          <div className="picker">
-            {channels.loading && <Spinner />}
-            {channels.data?.length === 0 && <span className="muted small">No channels available to you.</span>}
-            {channels.data?.map((ch) => (
-              <button
-                type="button"
-                key={ch.id}
-                className={"pick" + (selected.includes(ch.id) ? " selected" : "")}
-                onClick={() =>
-                  setSelected((prev) => (prev.includes(ch.id) ? prev.filter((c) => c !== ch.id) : [...prev, ch.id]))
-                }
-              >
-                #{ch.name || ch.id}
-              </button>
-            ))}
-          </div>
+          <ChannelPicker
+            channels={channels.data}
+            loading={channels.loading}
+            selected={selected}
+            setSelected={setSelected}
+          />
         </div>
 
         {isAdmin && (
@@ -185,6 +215,86 @@ function CreateKeyModal({
           </button>
           <button type="submit" className="btn btn-primary" disabled={submitting || !name.trim() || needsScope}>
             {submitting && <Spinner />} Create key
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function EditScopeModal({
+  apiKey,
+  user,
+  onClose,
+  onSaved,
+}: {
+  apiKey: ApiKey | null;
+  user: SessionUser;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const channels = useApi<Channel[]>(apiKey ? `/channels/by-user/${user.id}` : null);
+  const [selected, setSelected] = useState<string[]>(() => apiKey?.channels.map((c) => c.id) ?? []);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const needsScope = !!apiKey?.canDelegate && selected.length === 0;
+  const liveSubs = apiKey?.subkeys.filter((c) => !isRevoked(c)).length ?? 0;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!apiKey || needsScope || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api(`/api-keys/${apiKey.id}`, { method: "PATCH", body: { channelIds: selected } });
+      onSaved();
+      onClose();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={!!apiKey}
+      onClose={onClose}
+      title={`Edit scope of “${apiKey?.name}”`}
+      description="Changes apply right away. The key itself stays the same."
+      width={560}
+    >
+      <form className="stack" style={{ gap: 22 }} onSubmit={submit}>
+        <div className="field">
+          <label className="field-label">Channel scope</label>
+          <span className="field-hint">
+            {apiKey?.canDelegate
+              ? "Subkeys lose any channel you remove here."
+              : "Leave empty to follow each channel's own access rules."}
+          </span>
+          <ChannelPicker
+            channels={channels.data}
+            loading={channels.loading}
+            selected={selected}
+            setSelected={setSelected}
+            current={apiKey?.channels}
+          />
+          {needsScope && <span className="field-error">Pick at least one channel for a key that mints subkeys.</span>}
+        </div>
+
+        {liveSubs > 0 && (
+          <Notice icon="info">
+            This key has {liveSubs} active subkey{liveSubs === 1 ? "" : "s"}. Adding channels doesn't widen them.
+          </Notice>
+        )}
+        {error && <Notice tone="danger" icon="alert">{error}</Notice>}
+
+        <div className="modal-actions">
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={submitting || needsScope}>
+            {submitting && <Spinner />} Save scope
           </button>
         </div>
       </form>
@@ -255,6 +365,7 @@ function KeysPage({ user }: { user: SessionUser }) {
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<number | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState<ApiKey | null>(null);
   const { confirm, dialog } = useConfirm();
   // Only lockdown admins may create delegating keys. The server enforces
   // this; the page just hides the option from everyone else.
@@ -408,9 +519,14 @@ function KeysPage({ user }: { user: SessionUser }) {
                           <td className="hide-md muted">{fmtDate(k.createdAt)}</td>
                           <td className="hide-md muted">{fmtRelative(k.lastUsedAt)}</td>
                           <td className="right">
-                            <button className="btn btn-sm btn-danger" disabled={revokingId === k.id} onClick={() => revoke(k)}>
-                              {revokingId === k.id ? <Spinner /> : "Revoke"}
-                            </button>
+                            <div className="row" style={{ gap: 6, justifyContent: "flex-end", flexWrap: "nowrap" }}>
+                              <button className="btn btn-sm" onClick={() => setEditing(k)}>
+                                Edit scope
+                              </button>
+                              <button className="btn btn-sm btn-danger" disabled={revokingId === k.id} onClick={() => revoke(k)}>
+                                {revokingId === k.id ? <Spinner /> : "Revoke"}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                         {open &&
@@ -494,6 +610,16 @@ function KeysPage({ user }: { user: SessionUser }) {
         isAdmin={isAdmin}
         onCreated={(key) => {
           setCreatedKey(key);
+          keys.reload();
+        }}
+      />
+      <EditScopeModal
+        key={editing?.id ?? "none"}
+        apiKey={editing}
+        user={user}
+        onClose={() => setEditing(null)}
+        onSaved={() => {
+          toast("Scope updated");
           keys.reload();
         }}
       />

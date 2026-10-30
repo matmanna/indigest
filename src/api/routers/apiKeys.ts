@@ -6,10 +6,12 @@ import {
   authRequiredProcedure,
   auditAction,
   isChannelManager,
+  type ORPCContext,
 } from "../context";
-import { auditActions } from "../../lib/audit";
+import { auditActions, diff } from "../../lib/audit";
 import {
   generateApiKey,
+  isRevoked,
   lookupApiKey,
   resolveDelegatedScope,
 } from "../../lib/api-keys";
@@ -158,27 +160,8 @@ export const createApiKey = authRequiredProcedure
         });
     }
 
-    // Validate user has access to each specified channel
-    if (input.channelIds && input.channelIds.length > 0) {
-      const isLockdown = context.lockdownUsers.includes(slackId);
-      for (const channelId of input.channelIds) {
-        const ch = await dbGetChannel(db, channelId);
-        if (!ch)
-          throw new ORPCError("NOT_FOUND", {
-            message: `Channel ${channelId} not found`,
-          });
-        const isManager = isLockdown
-          ? false
-          : await isChannelManager(channelId, slackId, context.slackToken);
-        if (
-          !canCreateApiKeyForChannel(ch, slackId, { isLockdown, isManager })
-        ) {
-          throw new ORPCError("FORBIDDEN", {
-            message: `You don't have access to channel ${ch.name || channelId}`,
-          });
-        }
-      }
-    }
+    if (input.channelIds)
+      await assertCanScopeKeyTo(context, input.channelIds, slackId, "You don't");
 
     const { fullKey, keyPrefix, secretHash } = generateApiKey();
     const hash = await secretHash;
@@ -210,7 +193,37 @@ export const createApiKey = authRequiredProcedure
     return { fullKey, keyPrefix, name: input.name, id: keyRow?.id };
   });
 
-async function insertKeyChannels(db: DB, keyId: number, channelIds: string[]) {
+// A scoped key reads its channels whatever their access rules say, so every
+// channel in scope must be one the key's owner could read anyway.
+async function assertCanScopeKeyTo(
+  context: ORPCContext,
+  channelIds: string[],
+  slackId: string,
+  who: string,
+) {
+  const isLockdown = context.lockdownUsers.includes(slackId);
+  for (const channelId of channelIds) {
+    const ch = await dbGetChannel(context.db, channelId);
+    if (!ch)
+      throw new ORPCError("NOT_FOUND", {
+        message: `Channel ${channelId} not found`,
+      });
+    const isManager = isLockdown
+      ? false
+      : await isChannelManager(channelId, slackId, context.slackToken);
+    if (!canCreateApiKeyForChannel(ch, slackId, { isLockdown, isManager })) {
+      throw new ORPCError("FORBIDDEN", {
+        message: `${who} have access to channel ${ch.name || channelId}`,
+      });
+    }
+  }
+}
+
+async function insertKeyChannels(
+  db: Pick<DB, "insert">,
+  keyId: number,
+  channelIds: string[],
+) {
   if (channelIds.length === 0) return;
   await db
     .insert(apiKeyChannels)
@@ -462,6 +475,155 @@ export const revokeApiKey = authRequiredProcedure
     return { ok: true };
   });
 
+/**
+ * Subkeys that would be left with no channels once `removed` comes out of
+ * their parent's scope. A subkey with no channels is unscoped, so narrowing
+ * the parent must never leave one empty.
+ */
+export function strandedSubkeys(
+  subkeyChannels: Map<number, string[]>,
+  removed: string[],
+): number[] {
+  return [...subkeyChannels]
+    .filter(
+      ([, ids]) => ids.length > 0 && ids.every((id) => removed.includes(id)),
+    )
+    .map(([id]) => id);
+}
+
+/**
+ * Change which channels a key covers. Added channels must be ones the key's
+ * owner can access. Narrowing a delegating key narrows its live subkeys too;
+ * subkeys themselves are scoped by the service that minted them.
+ */
+export const updateApiKeyChannels = authRequiredProcedure
+  .route({ method: "PATCH", path: "/api-keys/{id}" })
+  .input(
+    z.object({ id: z.coerce.number().int(), channelIds: z.array(z.string()) }),
+  )
+  .handler(async ({ input, context }) => {
+    const db = context.db;
+    const userId = context.session.user.id;
+    const slackId = context.session.user.slackId;
+    const [key] = await db
+      .select({
+        name: apiKeys.name,
+        owner: apiKeys.owner,
+        ownerSlackId: authUser.slackId,
+        parentId: apiKeys.parentId,
+        canDelegate: apiKeys.canDelegate,
+        revokedAt: apiKeys.revokedAt,
+        revokedBy: apiKeys.revokedBy,
+      })
+      .from(apiKeys)
+      .leftJoin(authUser, eq(apiKeys.owner, authUser.id))
+      .where(eq(apiKeys.id, input.id));
+    const isLockdown = !!slackId && context.lockdownUsers.includes(slackId);
+    if (!key || (key.owner !== userId && !isLockdown)) {
+      if (key)
+        await auditAction(context, auditActions.apiKeyUpdate, {
+          target: { id: String(input.id) },
+          outcome: "denied",
+          reason: "not the key's owner",
+        });
+      throw new ORPCError("NOT_FOUND", { message: "API key not found" });
+    }
+    if (isRevoked(key))
+      throw new ORPCError("BAD_REQUEST", {
+        message: "A revoked API key can't be changed",
+      });
+    if (key.parentId !== null)
+      throw new ORPCError("BAD_REQUEST", {
+        message: "A subkey's channels are set by the key that minted it",
+      });
+
+    const next = [...new Set(input.channelIds)];
+    if (key.canDelegate && next.length === 0)
+      throw new ORPCError("BAD_REQUEST", {
+        message: "A delegating API key must be scoped to specific channels",
+      });
+
+    const current = (
+      await db
+        .select({ channelId: apiKeyChannels.channelId })
+        .from(apiKeyChannels)
+        .where(eq(apiKeyChannels.keyId, input.id))
+    ).flatMap((r) => (r.channelId ? [r.channelId] : []));
+    const added = next.filter((id) => !current.includes(id));
+    const removed = current.filter((id) => !next.includes(id));
+    if (added.length === 0 && removed.length === 0)
+      return { ok: true, channelIds: next };
+
+    if (added.length > 0) {
+      if (!key.ownerSlackId)
+        throw new ORPCError("FORBIDDEN", {
+          message: "This key's owner has no Slack ID",
+        });
+      const own = key.owner === userId;
+      await assertCanScopeKeyTo(
+        context,
+        added,
+        key.ownerSlackId,
+        own ? "You don't" : "The key's owner doesn't",
+      );
+    }
+
+    let subkeyIds: number[] = [];
+    if (key.canDelegate && removed.length > 0) {
+      const subkeys = await db
+        .select({ id: apiKeys.id })
+        .from(apiKeys)
+        .where(
+          and(
+            eq(apiKeys.parentId, input.id),
+            isNull(apiKeys.revokedAt),
+            isNull(apiKeys.revokedBy),
+          ),
+        );
+      subkeyIds = subkeys.map((k) => k.id);
+      const subkeyChannels = new Map<number, string[]>(
+        subkeyIds.map((id) => [id, []]),
+      );
+      if (subkeyIds.length > 0) {
+        const rows = await db
+          .select({ keyId: apiKeyChannels.keyId, id: apiKeyChannels.channelId })
+          .from(apiKeyChannels)
+          .where(inArray(apiKeyChannels.keyId, subkeyIds));
+        for (const r of rows)
+          if (r.keyId != null && r.id) subkeyChannels.get(r.keyId)?.push(r.id);
+      }
+      const stranded = strandedSubkeys(subkeyChannels, removed);
+      if (stranded.length > 0)
+        throw new ORPCError("CONFLICT", {
+          message: `${stranded.length} subkey${stranded.length === 1 ? " only covers" : "s only cover"} channels you're removing. Revoke ${stranded.length === 1 ? "it" : "them"} first.`,
+        });
+    }
+
+    await db.transaction(async (tx) => {
+      if (removed.length > 0)
+        await tx
+          .delete(apiKeyChannels)
+          .where(
+            and(
+              inArray(apiKeyChannels.keyId, [input.id, ...subkeyIds]),
+              inArray(apiKeyChannels.channelId, removed),
+            ),
+          );
+      await insertKeyChannels(tx, input.id, added);
+    });
+    await auditAction(
+      context,
+      auditActions.apiKeyUpdate,
+      {
+        target: { id: String(input.id), owner: key.owner },
+        changes: diff({ channelIds: current }, { channelIds: next }),
+        reason: key.owner === userId ? undefined : "changed by admin",
+      },
+      { targetName: key.name },
+    );
+    return { ok: true, channelIds: next };
+  });
+
 const fullKeySchema = z.string().min(1).max(256);
 
 /**
@@ -524,6 +686,7 @@ export const delegatedKeyStatus = apiKeyRequiredProcedure
 export const apiKeyRouter = {
   list: listApiKeys,
   create: createApiKey,
+  updateChannels: updateApiKeyChannels,
   revoke: revokeApiKey,
   delegate: delegateApiKey,
   revokeDelegated: revokeDelegatedApiKeys,
