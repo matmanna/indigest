@@ -32,6 +32,9 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
+// Queries allowed to read deleted rows, because they return no content.
+const CONTENT_FREE_QUERIES = ["listTombstones", "listReplyRecords"];
+
 /** Splits queries.ts into its top-level functions, keyed by name. */
 function queryFunctions(): Map<string, string> {
   const source = readFileSync("src/db/queries.ts", "utf8");
@@ -61,21 +64,25 @@ describe("deleted messages: static guards", () => {
   test("every read of the messages table in the query layer filters deleted rows", () => {
     const unfiltered = [...queryFunctions()]
       .filter(([, body]) => body.includes(".from(schema.messages)"))
-      // The tombstone query reads deleted rows on purpose, and is checked below.
-      .filter(([name]) => name !== "listTombstones")
+      // These read deleted rows on purpose, and are checked below.
+      .filter(([name]) => !CONTENT_FREE_QUERIES.includes(name))
       .filter(([, body]) => !body.includes("notDeleted"))
       .map(([name]) => name);
     expect(unfiltered).toEqual([]);
   });
 
-  test("the tombstone query never selects content", () => {
-    const body = queryFunctions().get("listTombstones")!;
-    expect(body).toBeDefined();
-    for (const column of ["text", "formattedText", "metadata", "userName"]) {
-      expect(body).not.toMatch(new RegExp(`schema\\.messages\\.${column}\\b`));
+  test("queries that read deleted rows never select content", () => {
+    for (const name of CONTENT_FREE_QUERIES) {
+      const body = queryFunctions().get(name)!;
+      expect(body, name).toBeDefined();
+      for (const column of ["text", "formattedText", "metadata", "userName"]) {
+        expect(body, `${name} selects ${column}`).not.toMatch(
+          new RegExp(`schema\\.messages\\.${column}\\b`),
+        );
+      }
+      // Selecting the whole table would pull the content in too.
+      expect(body, name).not.toMatch(/\.select\(\s*\)/);
     }
-    // Selecting the whole table would pull the content in too.
-    expect(body).not.toMatch(/\.select\(\s*\)/);
   });
 
   test("the Tombstone type carries no content", () => {
@@ -456,7 +463,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("deleted messages: database", ()
       return res;
     }
 
+    const CARD = "Welcome https://news.example.dev/news/leak-test/?ref=slack-bot";
     const paths = () => [
+      `/api/threads?channel=${channelId}&key=/news/leak-test/`,
+      `/api/threads?channel=${channelId}&key=/news/leak-test/&perDay=2&total=3&viewer=U1`,
       `/api/messages?channel=${channelId}`,
       `/api/messages?channel=${channelId}&limit=200`,
       `/api/messages?channel=${channelId}&threadTs=1.01`,
@@ -467,7 +477,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("deleted messages: database", ()
 
     test("a deleted message is served by no endpoint, and the live ones still are", async () => {
       await reset();
-      await q.upsertMessage(db, message("1.01"));
+      await q.upsertMessage(db, message("1.01", { text: CARD, formattedText: CARD }));
       await q.upsertMessage(db, secretMessage("1.02", { threadTs: "1.01" }));
       await q.upsertMessage(db, message("1.03", { threadTs: "1.01" }));
 
@@ -499,6 +509,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("deleted messages: database", ()
 
     test("a Slack message_deleted event hides the message from every endpoint", async () => {
       await reset();
+      await q.upsertMessage(db, message("1.01", { text: CARD, formattedText: CARD }));
       await q.upsertMessage(db, secretMessage("1.02", { threadTs: "1.01" }));
       await q.upsertMessage(db, message("1.03", { threadTs: "1.01" }));
       expect((await get(`/api/messages/1.02?channel=${channelId}`)).status).toBe(200);

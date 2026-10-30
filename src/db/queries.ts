@@ -414,6 +414,59 @@ export async function listTombstones(
   }));
 }
 
+/**
+ * Top-level, not deleted messages in a channel whose text mentions `needle`,
+ * newest first. The caller still has to check the match is exact: this is a
+ * substring search.
+ */
+export async function findTopLevelMessagesContaining(
+  db: DB,
+  channelId: string,
+  needle: string,
+): Promise<Message[]> {
+  const pattern = `%${needle.replace(/[\\%_]/g, "\\$&")}%`;
+  const rows = await db
+    .select()
+    .from(schema.messages)
+    .where(
+      and(
+        eq(schema.messages.channelId, channelId),
+        isNull(schema.messages.threadTs),
+        notDeleted,
+        or(
+          sql`${schema.messages.text} LIKE ${pattern}`,
+          sql`${schema.messages.formattedText} LIKE ${pattern}`,
+        ),
+      ),
+    )
+    .orderBy(sql`timestamp ASC`)
+    .limit(50);
+  return rows.map(rowToMessage);
+}
+
+/**
+ * Every thread reply in a channel, deleted or not, without its content: just
+ * who posted it and when. Internal, for working out comment allowances.
+ */
+export async function listReplyRecords(
+  db: DB,
+  channelId: string,
+): Promise<{ slackTs: string; userId: string }[]> {
+  const rows = await db
+    .select({
+      slackTs: schema.messages.slackTs,
+      userId: schema.messages.userId,
+    })
+    .from(schema.messages)
+    .where(
+      and(
+        eq(schema.messages.channelId, channelId),
+        sql`${schema.messages.threadTs} IS NOT NULL`,
+      ),
+    );
+  return rows;
+}
+
 export async function getMessages(
   db: DB,
   channelId: string,
