@@ -45,6 +45,11 @@ export const messages = pgTable(
     threadTs: text("thread_ts"),
     timestamp: text("timestamp").notNull(),
     metadata: text("metadata").notNull().default("{}"),
+    // Set when Slack reports the message deleted. The content stays in the row
+    // (limits and audits need to know it existed), but nothing may read a
+    // row with this set except through the Tombstone queries, which never
+    // select content. See src/db/queries.ts.
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (t) => ({
     uniqueMsg: uniqueIndex("uq_messages_channel_ts").on(t.channelId, t.slackTs),

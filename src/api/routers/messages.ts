@@ -92,7 +92,7 @@ export const getMessage = authOrApiKeyProcedure
       input.channel,
       input.slackTs,
     );
-    if (!msg) throw new ORPCError("Message not found");
+    if (!msg) throw new ORPCError("NOT_FOUND", { message: "Message not found" });
     return msg;
   });
 

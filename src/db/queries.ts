@@ -1,4 +1,4 @@
-import { eq, sql, and, inArray, or } from "drizzle-orm";
+import { eq, sql, and, inArray, isNull, or } from "drizzle-orm";
 import * as schema from "./schema";
 import type { DB } from "./index";
 
@@ -66,7 +66,29 @@ export interface BotAction {
   createdAt: string;
 }
 
+/**
+ * What remains visible of a deleted message: enough to count it (a deleted
+ * comment still uses up its author's allowance), and nothing of its content.
+ * Keep this free of text, formattedText and metadata.
+ */
+export interface Tombstone {
+  slackTs: string;
+  channelId: string;
+  threadTs?: string;
+  userId: string;
+  timestamp: string;
+  deletedAt: Date;
+}
+
 // --- Helpers ---
+
+/**
+ * Every query that returns message content must include this condition. Deleted
+ * rows keep their content in the database, so this filter is the only thing
+ * keeping it from API consumers, feeds, webhooks and forwards.
+ * tests/deleted-messages.test.ts fails if a read of the table lacks it.
+ */
+const notDeleted = isNull(schema.messages.deletedAt);
 
 export function parseBool(v: unknown): boolean {
   return v === "1" || v === "true";
@@ -94,7 +116,7 @@ function authorFilter(column: any, userId: string) {
   return or(
     eq(column, userId),
     sql`(',' || ${column} || ',') LIKE ${`%,${userId},%`}`,
-  );
+  )!;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -130,6 +152,10 @@ function rowToChannel(r: any): Channel {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function rowToMessage(r: any): Message {
+  // Fail closed: a query that forgot the notDeleted filter must not leak.
+  if (r.deletedAt) {
+    throw new Error("refusing to map a deleted message");
+  }
   return {
     id: r.id,
     slackTs: r.slackTs,
@@ -263,6 +289,8 @@ export async function upsertMessage(db: DB, msg: Message): Promise<void> {
     })
     .onConflictDoUpdate({
       target: [schema.messages.channelId, schema.messages.slackTs],
+      // A late event must not revive or rewrite a deleted message.
+      setWhere: notDeleted,
       set: {
         userId: mergeAuthorLists(msg.userId, msg.originalUserId),
         userName: mergeAuthorLists(msg.userName, msg.originalUserName),
@@ -296,6 +324,96 @@ export async function deleteMessage(
     );
 }
 
+/**
+ * Marks a stored message deleted, keeping its content. Returns whether it was
+ * newly marked: false for an unknown message or one already deleted.
+ */
+export async function markMessageDeleted(
+  db: DB,
+  channelId: string,
+  slackTs: string,
+): Promise<boolean> {
+  const rows = await db
+    .update(schema.messages)
+    .set({ deletedAt: new Date() })
+    .where(
+      and(
+        eq(schema.messages.channelId, channelId),
+        eq(schema.messages.slackTs, slackTs),
+        notDeleted,
+      ),
+    )
+    .returning({ id: schema.messages.id });
+  return rows.length > 0;
+}
+
+/**
+ * Slack timestamps of the stored, not deleted messages in a thread: its
+ * replies and its root.
+ */
+export async function getLiveThreadTimestamps(
+  db: DB,
+  channelId: string,
+  threadTs: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({ slackTs: schema.messages.slackTs })
+    .from(schema.messages)
+    .where(
+      and(
+        eq(schema.messages.channelId, channelId),
+        or(
+          eq(schema.messages.threadTs, threadTs),
+          eq(schema.messages.slackTs, threadTs),
+        ),
+        notDeleted,
+      ),
+    );
+  return rows.map((r) => r.slackTs);
+}
+
+/**
+ * Deleted messages, without their content. Internal: for counting what a user
+ * has posted. Never expose these through an API, feed or forward.
+ */
+export async function listTombstones(
+  db: DB,
+  channelId: string,
+  opts: { userId?: string; threadTs?: string } = {},
+): Promise<Tombstone[]> {
+  const conditions = [
+    eq(schema.messages.channelId, channelId),
+    sql`${schema.messages.deletedAt} IS NOT NULL`,
+  ];
+  if (opts.userId) {
+    conditions.push(authorFilter(schema.messages.userId, opts.userId));
+  }
+  if (opts.threadTs) {
+    conditions.push(eq(schema.messages.threadTs, opts.threadTs));
+  }
+
+  const rows = await db
+    .select({
+      slackTs: schema.messages.slackTs,
+      channelId: schema.messages.channelId,
+      threadTs: schema.messages.threadTs,
+      userId: schema.messages.userId,
+      timestamp: schema.messages.timestamp,
+      deletedAt: schema.messages.deletedAt,
+    })
+    .from(schema.messages)
+    .where(and(...conditions))
+    .orderBy(sql`timestamp ASC`);
+  return rows.map((r) => ({
+    slackTs: r.slackTs,
+    channelId: r.channelId,
+    threadTs: r.threadTs || undefined,
+    userId: r.userId,
+    timestamp: r.timestamp,
+    deletedAt: r.deletedAt!,
+  }));
+}
+
 export async function getMessages(
   db: DB,
   channelId: string,
@@ -311,7 +429,7 @@ export async function getMessages(
   const { limit: rawLimit = 50, offset = 0, after, before, userId, threadTs } = opts;
   const limit = Math.min(rawLimit, 200);
 
-  const conditions = [eq(schema.messages.channelId, channelId)];
+  const conditions = [eq(schema.messages.channelId, channelId), notDeleted];
   if (after) conditions.push(sql`${schema.messages.timestamp} >= ${after}`);
   if (before) conditions.push(sql`${schema.messages.timestamp} <= ${before}`);
   if (userId) conditions.push(authorFilter(schema.messages.userId, userId));
@@ -339,7 +457,7 @@ export async function getMessageCount(
 ): Promise<number> {
   const { after, before, userId, threadTs } = opts;
 
-  const conditions = [eq(schema.messages.channelId, channelId)];
+  const conditions = [eq(schema.messages.channelId, channelId), notDeleted];
   if (after) conditions.push(sql`${schema.messages.timestamp} >= ${after}`);
   if (before) conditions.push(sql`${schema.messages.timestamp} <= ${before}`);
   if (userId) conditions.push(authorFilter(schema.messages.userId, userId));
@@ -364,6 +482,7 @@ export async function getMessageBySlackTs(
       and(
         eq(schema.messages.channelId, channelId),
         eq(schema.messages.slackTs, slackTs),
+        notDeleted,
       ),
     )
     .limit(1);
@@ -379,7 +498,7 @@ export async function getOldestMessage(
   const rows = await db
     .select()
     .from(schema.messages)
-    .where(eq(schema.messages.channelId, channelId))
+    .where(and(eq(schema.messages.channelId, channelId), notDeleted))
     .orderBy(sql`timestamp ASC`)
     .limit(1);
   if (rows.length === 0) return null;
@@ -399,6 +518,7 @@ export async function getRecentMessages(
       and(
         eq(schema.messages.channelId, channelId),
         sql`${schema.messages.timestamp} >= ${sinceStr}`,
+        notDeleted,
       ),
     )
     .orderBy(sql`${schema.messages.timestamp} DESC`);

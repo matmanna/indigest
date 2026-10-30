@@ -23,6 +23,7 @@ import { eq } from "drizzle-orm";
 import * as q from "./db/queries";
 import { graphCache, invalidateGraphCache } from "./lib/graph-cache";
 import { auditActions, recordAudit } from "./lib/audit";
+import { handleMessageDeleted } from "./lib/deletions";
 import type {
   Channel as StoreChannel,
   Message as StoreMessage,
@@ -2106,6 +2107,16 @@ app.post("/events", async (c) => {
           ch.name = (conv.channel as any)?.name || "";
           await q.upsertChannel(db, ch);
         } catch { }
+      }
+
+      // Handled before the message branches below: a deletion event has no
+      // thread_ts of its own, and those branches would drop it.
+      if (ev.type === "message" && ev.subtype === "message_deleted") {
+        const marked = await handleMessageDeleted(db, ev);
+        console.log(
+          `Message deleted: channel=${ev.channel} ts=${ev.deleted_ts} marked=${marked}`,
+        );
+        return;
       }
 
       if (ev.type === "channel_rename") {
