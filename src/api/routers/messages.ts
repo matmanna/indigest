@@ -122,24 +122,31 @@ export const getThread = authOrApiKeyProcedure
     }),
   )
   .handler(async ({ input, context }) => {
-    const ch = await dbGetChannel(context.db, input.channel);
-    if (!ch || !ch.enabled)
-      throw new ORPCError("NOT_FOUND", {
-        message: "Channel not found or not enabled",
-      });
-    await assertChannelAccess(context, ch);
-
     const key = normalizeArticleKey(input.key);
     if (!key)
       throw new ORPCError("BAD_REQUEST", {
         message: "key must be an article path like /news/some-slug/",
       });
+    const limitsOn = Boolean(input.perDay && input.total);
 
-    const candidates = await findTopLevelMessagesContaining(
-      context.db,
-      input.channel,
-      key.slice(0, -1),
-    );
+    // The reads are independent, and each costs a round trip to the database,
+    // so they run together; the channel and access checks gate what is
+    // returned, not what is fetched.
+    const [ch, identity, candidates, records] = await Promise.all([
+      dbGetChannel(context.db, input.channel),
+      resolveContextFeedIdentity(context.db, context.session, context.apiKey),
+      findTopLevelMessagesContaining(context.db, input.channel, key.slice(0, -1)),
+      limitsOn ? listReplyRecords(context.db, input.channel) : Promise.resolve([]),
+    ]);
+    if (!ch || !ch.enabled)
+      throw new ORPCError("NOT_FOUND", {
+        message: "Channel not found or not enabled",
+      });
+    if (!canAccessFeed(ch, identity))
+      throw new ORPCError("FORBIDDEN", {
+        message: "You don't have access to this channel",
+      });
+
     const cards = candidates.filter(
       (m) => articleKeyFromCardText(m.text, m.formattedText) === key,
     );
@@ -162,7 +169,6 @@ export const getThread = authOrApiKeyProcedure
         total: input.total,
         timeZone: input.timeZone,
       };
-      const records = await listReplyRecords(context.db, input.channel);
       const valid = validCommentTimestamps(records, limits);
       replies = replies.filter((m) => valid.has(m.slackTs));
       if (input.viewer) viewer = commentUsage(records, input.viewer, limits);
