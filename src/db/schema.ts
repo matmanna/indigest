@@ -26,6 +26,9 @@ export const channels = pgTable("channels", {
   metadataSchema: text("metadata_schema").notNull().default(""),
   metadataRequired: text("metadata_required").notNull().default("0"),
   properties: text("properties").notNull().default("{}"),
+  // Static mrkdwn shown in bold above every forward, e.g. "New Edition of
+  // Happenings!". Meant for auto-pub channels, which never see the metadata modal.
+  staticMetadata: text("static_metadata").notNull().default(""),
   createdAt: text("created_at").notNull().default(""),
   accessPermUsers: text("access_perm_users").notNull().default("*"),
 });
