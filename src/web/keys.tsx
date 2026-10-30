@@ -502,8 +502,10 @@ function KeysPage({ user }: { user: SessionUser }) {
                               {subs.length > 0 && (
                                 <button className="subkey-toggle" onClick={() => toggle(k.id)} aria-expanded={open}>
                                   <Icon name={open ? "chevronDown" : "chevronRight"} size={12} />
-                                  {liveSubs} active subkey{liveSubs === 1 ? "" : "s"}
-                                  {subs.length > liveSubs && <span className="muted"> · {subs.length - liveSubs} revoked</span>}
+                                  <span className="subkey-label">
+                                    {liveSubs} active subkey{liveSubs === 1 ? "" : "s"}
+                                    {subs.length > liveSubs && <span className="muted"> · {subs.length - liveSubs} revoked</span>}
+                                  </span>
                                 </button>
                               )}
                             </div>
