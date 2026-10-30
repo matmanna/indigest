@@ -17,7 +17,9 @@ mock.module("../src/db/queries", () => ({
 
 const { resolveDelegatedScope, isRevoked } =
   await import("../src/lib/api-keys");
-const { childKeyName } = await import("../src/api/routers/apiKeys");
+const { childKeyName, strandedSubkeys } = await import(
+  "../src/api/routers/apiKeys"
+);
 const { OpenAPIHandler } = await import("@orpc/openapi/fetch");
 const { router } = await import("../src/api/router");
 
@@ -50,6 +52,23 @@ describe("delegated key scope", () => {
   });
   test("child names are namespaced under the parent", () => {
     expect(childKeyName("slacker-news", "U123")).toBe("slacker-news/U123");
+  });
+});
+
+describe("narrowing a delegating key", () => {
+  const subkeys = new Map([
+    [1, ["C1"]],
+    [2, ["C1", "C2"]],
+    [3, ["C2"]],
+  ]);
+  test("only subkeys losing every channel are stranded", () => {
+    expect(strandedSubkeys(subkeys, ["C1"])).toEqual([1]);
+  });
+  test("removing the whole scope strands every subkey", () => {
+    expect(strandedSubkeys(subkeys, ["C1", "C2"])).toEqual([1, 2, 3]);
+  });
+  test("removing nothing strands nothing", () => {
+    expect(strandedSubkeys(subkeys, [])).toEqual([]);
   });
 });
 
