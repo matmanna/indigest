@@ -25,7 +25,15 @@ export async function handleMessageDeleted(
 interface SlackReply {
   ts?: string;
   subtype?: string;
+  text?: string;
+  edited?: { ts?: string };
 }
+
+/** Turns a Slack reply into the text and mrkdwn indigest stores for it. */
+export type RenderReply = (message: SlackReply) => {
+  text: string;
+  formattedText: string | null;
+};
 
 /** The slice of @slack/web-api's WebClient that reconcile needs. */
 export interface RepliesClient {
@@ -47,6 +55,8 @@ const MAX_PAGES = 50;
 export interface ReconcileResult {
   /** Timestamps newly marked deleted. */
   deleted: string[];
+  /** Timestamps of replies whose edited text was brought up to date. */
+  edited: string[];
   /** False when Slack's answer was not trustworthy, so nothing was marked. */
   complete: boolean;
 }
@@ -62,16 +72,18 @@ export async function reconcileThreadDeletions(
   slack: RepliesClient,
   channelId: string,
   threadTs: string,
+  render?: RenderReply,
 ): Promise<ReconcileResult> {
   const stored = await q.getLiveThreadTimestamps(db, channelId, threadTs);
-  if (stored.length === 0) return { deleted: [], complete: true };
+  if (stored.length === 0) return { deleted: [], edited: [], complete: true };
 
   const present = new Set<string>();
+  const seen = new Map<string, SlackReply>();
   let cursor: string | undefined;
   let pages = 0;
   try {
     do {
-      if (++pages > MAX_PAGES) return { deleted: [], complete: false };
+      if (++pages > MAX_PAGES) return { deleted: [], edited: [], complete: false };
       const page = await slack.conversations.replies({
         channel: channelId,
         ts: threadTs,
@@ -82,6 +94,7 @@ export async function reconcileThreadDeletions(
         // Slack leaves a placeholder for a deleted root that still has replies.
         if (message.ts && message.subtype !== "tombstone") {
           present.add(message.ts);
+          seen.set(message.ts, message);
         }
       }
       cursor = page.response_metadata?.next_cursor || undefined;
@@ -91,18 +104,38 @@ export async function reconcileThreadDeletions(
     // cannot tell here whether Slack still keeps them.
     if ((error as { data?: { error?: string } })?.data?.error === "thread_not_found") {
       const marked = await q.markMessageDeleted(db, channelId, threadTs);
-      return { deleted: marked ? [threadTs] : [], complete: true };
+      return { deleted: marked ? [threadTs] : [], edited: [], complete: true };
     }
-    return { deleted: [], complete: false };
+    return { deleted: [], edited: [], complete: false };
   }
 
   // A thread always contains at least its root.
-  if (present.size === 0) return { deleted: [], complete: false };
+  if (present.size === 0) return { deleted: [], edited: [], complete: false };
 
   const deleted: string[] = [];
   for (const ts of stored) {
     if (present.has(ts)) continue;
     if (await q.markMessageDeleted(db, channelId, ts)) deleted.push(ts);
   }
-  return { deleted, complete: true };
+
+  // Edits whose events were missed.
+  const edited: string[] = [];
+  if (render) {
+    const storedText = new Map(
+      (await q.getLiveReplyText(db, channelId, threadTs)).map((r) => [r.slackTs, r.text]),
+    );
+    for (const [ts, message] of seen) {
+      if (ts === threadTs || !message.edited) continue;
+      const current = storedText.get(ts);
+      if (current === undefined) continue;
+      const next = render(message);
+      if (next.text === current) continue;
+      const updated = await q.updateReplyContent(db, channelId, ts, {
+        ...next,
+        editedAt: new Date(Number(message.edited.ts ?? Date.now() / 1000) * 1000),
+      });
+      if (updated) edited.push(ts);
+    }
+  }
+  return { deleted, edited, complete: true };
 }
