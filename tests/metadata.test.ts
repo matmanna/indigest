@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { extractMetadataFromView } from "../src/api/modal";
-import { isMetadataValueSet } from "../src/app";
+import { formatForwardedMetadata, isMetadataValueSet } from "../src/app";
 
 describe("optional metadata fields", () => {
   const schema = {
@@ -49,5 +49,32 @@ describe("optional metadata fields", () => {
     expect(isMetadataValueSet(false)).toBe(true);
     expect(isMetadataValueSet(0)).toBe(true);
     expect(isMetadataValueSet(["news"])).toBe(true);
+  });
+});
+
+describe("forwarded metadata", () => {
+  const schema = {
+    fields: [
+      { action_id: "title", label: "Title" },
+      { action_id: "agreement", label: "I agree to the rules" },
+    ],
+  };
+
+  test("the agreement field is never forwarded", () => {
+    expect(
+      formatForwardedMetadata(
+        { title: "Hello", agreement: ["yes"], extra: "" },
+        schema,
+      ),
+    ).toEqual(["*Title:* Hello"]);
+  });
+
+  test("only an agreement leaves nothing to forward", () => {
+    expect(formatForwardedMetadata({ agreement: ["yes"] }, schema)).toEqual([]);
+  });
+
+  test("no metadata or schema forwards nothing", () => {
+    expect(formatForwardedMetadata(null, schema)).toEqual([]);
+    expect(formatForwardedMetadata({ title: "Hi" }, null)).toEqual([]);
   });
 });

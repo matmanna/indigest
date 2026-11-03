@@ -142,6 +142,8 @@ channel managers can define a metadata form that opens in a **modal** when someo
 | `datepicker`          | Date picker                                                                      |
 | `file_input`          | File upload (uploaded to Hack Club CDN if key is set)                            |
 
+a field with `"action_id":"agreement"` (for example a required "I agree to the rules" select) is kept on the source channel. it's stored and sent to the channel's webhook and API like any other field, but it's never shown in forwards to subscribing channels.
+
 ## webhooks
 
 when a message is approved, fires `POST` to the webhook URL:

@@ -1062,6 +1062,31 @@ export function formatStaticMetadata(staticMetadata: string | undefined): string
     .join("\n");
 }
 
+// Metadata fields that stay on the source channel. They're stored and reach
+// its own webhook and API, but forwards to subscribing channels leave them out.
+export const PRIVATE_METADATA_FIELDS: ReadonlySet<string> = new Set(["agreement"]);
+
+/**
+ * The `*Label:* value` lines a forward shows for a message's metadata,
+ * skipping unset values and private fields such as `agreement`.
+ */
+export function formatForwardedMetadata(
+  metadata: Record<string, unknown> | null,
+  schema: { fields?: any[] } | null,
+): string[] {
+  if (!metadata || !schema) return [];
+  return Object.keys(metadata)
+    .filter(
+      (metaProp) =>
+        !PRIVATE_METADATA_FIELDS.has(metaProp) &&
+        isMetadataValueSet(metadata[metaProp]),
+    )
+    .map((metaProp) => {
+      const field = schema.fields?.find((e: any) => e.action_id === metaProp);
+      return `*${field?.label || metaProp}:* ${metadata[metaProp]}`;
+    });
+}
+
 export function findExistingForward(
   actions: q.BotAction[],
   subscriberChannelId: string,
@@ -1328,17 +1353,7 @@ export async function forwardToSubscribers(
     const parsedSchema = sourceChannel.metadataSchema
       ? JSON.parse(sourceChannel.metadataSchema)
       : null;
-    const metadataLines =
-      parsedMetadata && parsedSchema
-        ? Object.keys(parsedMetadata)
-          .filter((metaProp) => isMetadataValueSet(parsedMetadata[metaProp]))
-          .map((metaProp) => {
-            const field = parsedSchema.fields?.find(
-              (e: any) => e.action_id === metaProp,
-            );
-            return `*${field?.label || metaProp}:* ${parsedMetadata[metaProp]}`;
-          })
-        : [];
+    const metadataLines = formatForwardedMetadata(parsedMetadata, parsedSchema);
     const metadataSection = metadataLines.length
       ? metadataLines.join("\n") + "\n"
       : "";
@@ -2957,17 +2972,10 @@ app.post("/interactions", async (c) => {
           const parsedSchema = channel.metadataSchema
             ? JSON.parse(channel.metadataSchema)
             : null;
-          const metadataSection =
-            parsedMetadata && parsedSchema
-              ? Object.keys(parsedMetadata)
-                .map((metaProp) => {
-                  const field = parsedSchema.fields?.find(
-                    (e: any) => e.action_id === metaProp,
-                  );
-                  return `*${field?.label || metaProp}:* ${parsedMetadata[metaProp]}`;
-                })
-                .join("\n")
-              : "";
+          const metadataSection = formatForwardedMetadata(
+            parsedMetadata,
+            parsedSchema,
+          ).join("\n");
 
           // Find existing bot actions for this source message and edit them with metadata
           const botActions = await q.getBotActionsBySource(db,

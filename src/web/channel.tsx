@@ -570,7 +570,7 @@ function MetadataTab({ ch, canManage, save }: Ctx) {
     <div className="stack">
       <SectionCard
         title="Metadata schema"
-        description="Fields approvers fill in when publishing, shown as a Slack modal."
+        description={`Fields approvers fill in when publishing, shown as a Slack modal. A field with action_id "agreement" stays on this channel and is left out of forwards.`}
         canManage={canManage}
         initial={{ schema: prettyJson(ch.metadataSchema, ""), required: ch.metadataRequired }}
         onSave={(v) =>
