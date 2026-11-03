@@ -3,6 +3,7 @@ import {
   canAccessFeed,
   chunkLongText,
   findExistingForward,
+  formatStaticMetadata,
   hasProvidedMetadata,
   hasChannelPing,
   hasRecentSubstantiveMessage,
@@ -26,7 +27,7 @@ import {
 const channel = (accessPermUsers = ["*"]) => ({
   id: "C1", name: "feed", teamId: "T1", enabled: true, linkMode: false,
   webhookUrl: "", autoApproveUsers: [], manualUsers: [], triggerMode: "message" as const, approvedPosters: [], accessPermUsers,
-  trackReplies: false, metadataSchema: "", metadataRequired: false, properties: "", createdAt: "",
+  trackReplies: false, metadataSchema: "", metadataRequired: false, properties: "", staticMetadata: "", createdAt: "",
 });
 const msg = (text: string) => ({ slackTs: "1.1", channelId: "C1", userId: "U1", userName: "u", text, timestamp: new Date().toISOString(), metadata: {} });
 
@@ -354,5 +355,20 @@ describe("delegated key names", () => {
     expect(childKeyLabel("site/a@b.c - RSS bot", "site", "a@b.c")).toBe("RSS bot");
     expect(childKeyLabel("site/a@b.c - a - b", "site", "a@b.c")).toBe("a - b");
     expect(childKeyLabel("site/a@b.c", "site", "a@b.c")).toBeNull();
+  });
+});
+
+describe("formatStaticMetadata", () => {
+  test("bolds each non-empty line and trims surrounding whitespace", () => {
+    expect(formatStaticMetadata("  New Edition of Happenings!  \n\n Week 4 ")).toBe("*New Edition of Happenings!*\n*Week 4*");
+  });
+
+  test("does not double-wrap lines that are already bold", () => {
+    expect(formatStaticMetadata("*Already bold*")).toBe("*Already bold*");
+  });
+
+  test("returns empty string when nothing is set", () => {
+    expect(formatStaticMetadata("")).toBe("");
+    expect(formatStaticMetadata(undefined)).toBe("");
   });
 });

@@ -21,6 +21,8 @@ export interface Channel {
   metadataSchema: string;
   metadataRequired: boolean;
   properties: string;
+  /** Static mrkdwn shown in bold above every forward. Empty means none. */
+  staticMetadata: string;
   createdAt: string;
 }
 
@@ -146,6 +148,7 @@ function rowToChannel(r: any): Channel {
     metadataSchema: r.metadataSchema,
     metadataRequired: parseBool(r.metadataRequired),
     properties: r.properties || "{}",
+    staticMetadata: r.staticMetadata || "",
     createdAt: r.createdAt,
   };
 }
@@ -221,6 +224,7 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
       metadataSchema: ch.metadataSchema,
       metadataRequired: ch.metadataRequired ? "1" : "0",
       properties: ch.properties,
+      staticMetadata: ch.staticMetadata,
       createdAt: sql`COALESCE(NULLIF((SELECT created_at FROM channels WHERE id = ${ch.id}), ''), to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))`,
     })
     .onConflictDoUpdate({
@@ -240,6 +244,7 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
         metadataSchema: ch.metadataSchema,
         metadataRequired: ch.metadataRequired ? "1" : "0",
         properties: ch.properties,
+        staticMetadata: ch.staticMetadata,
       },
     });
 }

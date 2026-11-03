@@ -57,6 +57,7 @@ type Patch = Partial<
     | "metadataSchema"
     | "metadataRequired"
     | "properties"
+    | "staticMetadata"
   >
 >;
 
@@ -612,6 +613,32 @@ function MetadataTab({ ch, canManage, save }: Ctx) {
             </>
           );
         }}
+      </SectionCard>
+
+      <SectionCard
+        title="Static metadata"
+        description="Bold lines shown above every forward. For auto-publishing channels that never open the metadata modal."
+        canManage={canManage}
+        initial={{ text: ch.staticMetadata }}
+        onSave={(v) => save({ staticMetadata: v.text.trim() }, "Static metadata saved")}
+      >
+        {(v, set) => (
+          <div className="card-body">
+            <div className="field">
+              <textarea
+                className="textarea"
+                rows={3}
+                spellCheck={false}
+                disabled={!canManage}
+                placeholder={"New Edition of Happenings!"}
+                maxLength={2000}
+                value={v.text}
+                onChange={(e) => set({ text: e.currentTarget.value })}
+              />
+              <span className="field-hint">One line per row. Each line is rendered bold.</span>
+            </div>
+          </div>
+        )}
       </SectionCard>
 
       <SectionCard

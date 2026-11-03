@@ -128,6 +128,7 @@ const channel = (id: string): q.Channel => ({
   metadataSchema: "",
   metadataRequired: false,
   properties: "",
+  staticMetadata: "",
   createdAt: "",
 });
 

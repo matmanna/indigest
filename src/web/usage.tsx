@@ -69,6 +69,16 @@ profile overrides (see below).
 - \`/in prop get\` — View the current properties.
 - \`/in prop clear\` — Remove the properties.
 
+## Static Metadata
+
+Bold line(s) placed above every forward from this channel, with no modal.
+Useful for auto-publishing channels, e.g. a \`#happenings\` forward in \`#news\`
+that starts with **New Edition of Happenings!**.
+
+- \`/in static set <text>\` — Set the line(s). One per row.
+- \`/in static get\` — View the current static metadata.
+- \`/in static clear\` — Remove it.
+
 ## Subscriber Profile Overrides
 
 Customize how this channel's forwards appear. The value can be a static

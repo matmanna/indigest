@@ -107,6 +107,7 @@ export interface Channel {
   metadataSchema: string;
   metadataRequired: boolean;
   properties: string;
+  staticMetadata: string;
   createdAt: string;
   canManage?: boolean;
 }

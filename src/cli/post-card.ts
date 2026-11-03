@@ -101,6 +101,7 @@ if (flags.has("--setup")) {
     metadataSchema: existing?.metadataSchema ?? "",
     metadataRequired: existing?.metadataRequired ?? false,
     properties: existing?.properties ?? "",
+    staticMetadata: existing?.staticMetadata ?? "",
     createdAt: existing?.createdAt ?? "",
     enabled: true,
     trackReplies: true,
