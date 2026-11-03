@@ -1472,24 +1472,37 @@ app.use("/api/*", async (c, next) => {
   let session: ORPCContext["session"] = null;
   let apiKey: ORPCContext["apiKey"] = null;
 
-  // Resolve session from cookies
-  try {
-    const auth = getAuth(dbUrl, c.env as any);
-    const s = await auth.api.getSession({ headers: c.req.raw.headers });
-    if (s?.user) {
-      session = { user: s.user as any };
+  const authHeader = c.req.header("Authorization") || "";
+  const hasBearer = authHeader.startsWith("Bearer ");
+
+  // Resolve session from cookies. A request that carries an API key and no
+  // cookies has no session to find, so skip the lookup.
+  if (!hasBearer || c.req.header("cookie")) {
+    try {
+      const auth = getAuth(dbUrl, c.env as any);
+      const s = await auth.api.getSession({ headers: c.req.raw.headers });
+      if (s?.user) {
+        session = { user: s.user as any };
+      }
+    } catch (err: any) {
+      console.error("Session resolution error:", err.message);
     }
-  } catch (err: any) {
-    console.error("Session resolution error:", err.message);
   }
 
   // Resolve API key from Bearer token (if present)
-  const authHeader = c.req.header("Authorization") || "";
-  if (authHeader.startsWith("Bearer ")) {
+  if (hasBearer) {
     try {
       apiKey = await createApiKeyContext({
         req: c.req.raw,
         databaseUrl: dbUrl,
+        // Recording when a key was last used need not hold up the response.
+        defer: (work) => {
+          try {
+            c.executionCtx.waitUntil(work);
+          } catch {
+            // No execution context (a test, or Bun): it just runs.
+          }
+        },
       });
     } catch (err: any) {
       // A rejected key gets its real reason; anything else (e.g. the

@@ -65,9 +65,11 @@ export function isRevoked(key: {
 export async function createApiKeyContext({
   req,
   databaseUrl,
+  defer,
 }: {
   req: Request;
   databaseUrl: string;
+  defer?: (work: Promise<unknown>) => void;
 }): Promise<ApiKeyIdentity> {
   const authHeader = req.headers.get("Authorization");
   if (!authHeader?.startsWith("Bearer ")) {
@@ -76,10 +78,12 @@ export async function createApiKeyContext({
     });
   }
 
-  return authenticateApiKey(authHeader.slice(7), databaseUrl);
+  return authenticateApiKey(authHeader.slice(7), databaseUrl, defer);
 }
 
 export interface ApiKeyLookup {
+  /** When the key last authenticated a request, as far as is recorded. */
+  lastUsedAt?: Date | null;
   identity: ApiKeyIdentity;
   revoked: boolean;
   // When the key (or its parent) was revoked; null if unknown, as for keys
@@ -117,6 +121,7 @@ export async function lookupApiKey(
       canDelegate: schema.apiKeys.canDelegate,
       parentId: schema.apiKeys.parentId,
       subject: schema.apiKeys.subject,
+      lastUsedAt: schema.apiKeys.lastUsedAt,
       parentRevokedAt: parentKey.revokedAt,
       parentRevokedBy: parentKey.revokedBy,
       channelId: schema.apiKeyChannels.channelId,
@@ -148,6 +153,7 @@ export async function lookupApiKey(
         .sort((x, y) => x.getTime() - y.getTime())[0] ?? null);
 
   return {
+    lastUsedAt: keyRow.lastUsedAt,
     identity: {
       id: keyRow.id,
       keyPrefix: keyRow.keyPrefix,
@@ -163,9 +169,19 @@ export async function lookupApiKey(
   };
 }
 
+// "Last used" is only recorded this often, so a busy key does not add a
+// database write to every request it makes.
+const LAST_USED_RESOLUTION_MS = 60_000;
+
+/**
+ * Checks a key. Its "last used" time is written in the background when the
+ * caller gives a `defer` (such as a Worker's waitUntil), so a request does not
+ * wait for the write; without one it is written before returning.
+ */
 export async function authenticateApiKey(
   token: string,
   databaseUrl: string,
+  defer?: (work: Promise<unknown>) => void,
 ): Promise<ApiKeyIdentity> {
   if (!token.startsWith(KEY_PREFIX)) {
     throw new ORPCError("UNAUTHORIZED", {
@@ -187,10 +203,18 @@ export async function authenticateApiKey(
     });
   }
 
-  await getDb(databaseUrl)
-    .update(schema.apiKeys)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(schema.apiKeys.id, found.identity.id));
+  const stale =
+    !found.lastUsedAt ||
+    Date.now() - found.lastUsedAt.getTime() >= LAST_USED_RESOLUTION_MS;
+  if (stale) {
+    const write = getDb(databaseUrl)
+      .update(schema.apiKeys)
+      .set({ lastUsedAt: new Date() })
+      .where(eq(schema.apiKeys.id, found.identity.id))
+      .then(() => undefined);
+    if (defer) defer(write.catch(() => undefined));
+    else await write;
+  }
 
   return found.identity;
 }
