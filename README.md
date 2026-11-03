@@ -106,6 +106,14 @@ forwards from a given source. The override is either a literal value/URL, or a
 
 Unset or unresolved overrides fall back to the original author's name/picture.
 
+## deleted messages
+
+when Slack reports a message deleted, indigest keeps the row but sets `messages.deleted_at`. The content stays in the database; every query that returns messages skips deleted rows, so deleted content is never served by the API, feeds, webhooks or forwards. `tests/deleted-messages.test.ts` guards this, including a check that every read of the table filters them out. A late edit event cannot revive or rewrite a deleted message.
+
+Deletions arrive as `message` events with `subtype: "message_deleted"`, which Slack sends to apps subscribed to `message.channels` (and `message.groups` for private channels). There is no separate `message_deleted` subscription or scope: add those bot events under Event Subscriptions, with the `channels:history` / `groups:history` scopes. Events can be missed, so `reconcileThreadDeletions` (`src/lib/deletions.ts`) compares a stored thread against `conversations.replies` and marks anything Slack no longer returns. It marks nothing after an error, an empty answer or an unfinished fetch.
+
+Apply the new column with `bun run db:push`.
+
 ## setting metadata
 
 channel managers can define a metadata form that opens in a **modal** when someone clicks **Yep!** on a message in manual mode.

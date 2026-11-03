@@ -65,6 +65,12 @@ export const auditActions = {
     severity: "high",
     description: "Created an API key",
   }),
+  apiKeyUpdate: defineAuditAction("api_key.update", {
+    target: "api_key",
+    severity: "high",
+    description: "Changed which channels an API key covers",
+    requiresChanges: true,
+  }),
   apiKeyRevoke: defineAuditAction("api_key.revoke", {
     target: "api_key",
     severity: "high",

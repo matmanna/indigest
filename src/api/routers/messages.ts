@@ -6,7 +6,17 @@ import {
   getMessages as dbGetMessages,
   getMessageCount as dbGetMessageCount,
   getMessageBySlackTs as dbGetMessageBySlackTs,
+  findTopLevelMessagesContaining,
+  listReplyRecords,
 } from "../../db/queries";
+import {
+  articleKeyFromCardText,
+  commentUsage,
+  editedAtFromMetadata,
+  normalizeArticleKey,
+  validCommentTimestamps,
+  type CommentLimits,
+} from "../../lib/threads";
 import type { Channel } from "../../db/queries";
 import { canAccessFeed, resolveContextFeedIdentity } from "../../lib/access";
 import type { ORPCContext } from "../context";
@@ -92,11 +102,101 @@ export const getMessage = authOrApiKeyProcedure
       input.channel,
       input.slackTs,
     );
-    if (!msg) throw new ORPCError("Message not found");
+    if (!msg) throw new ORPCError("NOT_FOUND", { message: "Message not found" });
     return msg;
+  });
+
+export const getThread = authOrApiKeyProcedure
+  .route({ method: "GET", path: "/threads" })
+  .input(
+    z.object({
+      channel: z.string().min(1),
+      // An article's path, such as /news/some-slug/, or a URL to it.
+      key: z.string().min(1),
+      // Comment limits. Without both limits no reply is held back.
+      perDay: z.coerce.number().int().min(1).optional(),
+      total: z.coerce.number().int().min(1).optional(),
+      timeZone: z.string().default("America/New_York"),
+      // A Slack user whose allowance to report.
+      viewer: z.string().optional(),
+    }),
+  )
+  .handler(async ({ input, context }) => {
+    const key = normalizeArticleKey(input.key);
+    if (!key)
+      throw new ORPCError("BAD_REQUEST", {
+        message: "key must be an article path like /news/some-slug/",
+      });
+    const limitsOn = Boolean(input.perDay && input.total);
+
+    // The reads are independent, and each costs a round trip to the database,
+    // so they run together; the channel and access checks gate what is
+    // returned, not what is fetched.
+    const [ch, identity, candidates, records] = await Promise.all([
+      dbGetChannel(context.db, input.channel),
+      resolveContextFeedIdentity(context.db, context.session, context.apiKey),
+      findTopLevelMessagesContaining(context.db, input.channel, key.slice(0, -1)),
+      limitsOn ? listReplyRecords(context.db, input.channel) : Promise.resolve([]),
+    ]);
+    if (!ch || !ch.enabled)
+      throw new ORPCError("NOT_FOUND", {
+        message: "Channel not found or not enabled",
+      });
+    if (!canAccessFeed(ch, identity))
+      throw new ORPCError("FORBIDDEN", {
+        message: "You don't have access to this channel",
+      });
+
+    const cards = candidates.filter(
+      (m) => articleKeyFromCardText(m.text, m.formattedText) === key,
+    );
+    if (cards.length === 0) return { data: { card: null, replies: [] } };
+
+    const replyLists = await Promise.all(
+      cards.map((card) =>
+        dbGetMessages(context.db, input.channel, {
+          threadTs: card.slackTs,
+          limit: 200,
+        }),
+      ),
+    );
+
+    let replies = replyLists.flat();
+    let viewer: ReturnType<typeof commentUsage> | undefined;
+    if (input.perDay && input.total) {
+      const limits: CommentLimits = {
+        perDay: input.perDay,
+        total: input.total,
+        timeZone: input.timeZone,
+      };
+      const valid = validCommentTimestamps(records, limits);
+      replies = replies.filter((m) => valid.has(m.slackTs));
+      if (input.viewer) viewer = commentUsage(records, input.viewer, limits);
+    }
+
+    replies.sort((a, b) => Number(a.slackTs) - Number(b.slackTs));
+    return {
+      data: {
+        // The earliest card is where replies are made.
+        card: { slackTs: cards[0]!.slackTs, channelId: input.channel },
+        replies: replies.map((m) => ({
+          slackTs: m.slackTs,
+          userId: m.userId,
+          userName: m.userName,
+          text: m.text,
+          formattedText: m.formattedText ?? null,
+          timestamp: m.timestamp,
+          ...(editedAtFromMetadata(m.metadata)
+            ? { editedAt: editedAtFromMetadata(m.metadata) }
+            : {}),
+        })),
+        ...(viewer ? { viewer } : {}),
+      },
+    };
   });
 
 export const messageRouter = {
   list: listMessages,
   get: getMessage,
+  thread: getThread,
 };

@@ -23,6 +23,9 @@ import { eq } from "drizzle-orm";
 import * as q from "./db/queries";
 import { graphCache, invalidateGraphCache } from "./lib/graph-cache";
 import { auditActions, recordAudit } from "./lib/audit";
+import { handleMessageDeleted } from "./lib/deletions";
+import { handleReplyEdited, isReplyEdit } from "./lib/edits";
+import { cardText, isCardAuthor, parseCommentConfig } from "./lib/threads";
 import type {
   Channel as StoreChannel,
   Message as StoreMessage,
@@ -54,6 +57,69 @@ async function syncChannelName(
       err?.data?.error || err?.message || err,
     );
   }
+}
+
+// Who indigest's own bot is, for telling its posts apart. One lookup per
+// worker instance.
+let selfIdentity: Promise<{ userId?: string; botId?: string }> | undefined;
+function getSelfIdentity(slack: WebClient) {
+  selfIdentity ??= slack.auth
+    .test()
+    .then((auth) => ({ userId: auth.user_id, botId: (auth as any).bot_id }))
+    .catch((error) => {
+      selfIdentity = undefined;
+      throw error;
+    });
+  return selfIdentity;
+}
+
+/**
+ * In a comment channel, thread replies are tracked only under an article card
+ * posted by an allowed bot. Stores the card the first time it is seen, with
+ * the links from its blocks in its text, since the article is found by that
+ * link. Returns whether the reply is a comment.
+ */
+async function admitCommentReply(
+  db: any,
+  slack: WebClient,
+  ev: any,
+  cardBots: string[],
+): Promise<boolean> {
+  const self = cardBots.includes("self")
+    ? await getSelfIdentity(slack)
+    : ({} as { userId?: string; botId?: string });
+
+  // Replies by bots, indigest's own included, are not comments.
+  if (ev.bot_id || (self.userId && ev.user === self.userId)) return false;
+
+  const stored = await q.getMessageBySlackTs(db, ev.channel, ev.thread_ts);
+  if (stored) return isCardAuthor({ user: stored.userId }, cardBots, self);
+
+  // The event names the parent's author, so the usual case needs no lookup;
+  // the card itself is fetched to store it.
+  const history = await slack.conversations.history({
+    channel: ev.channel,
+    latest: ev.thread_ts,
+    limit: 1,
+    inclusive: true,
+  });
+  const card = history.messages?.[0] as any;
+  if (!card || card.ts !== ev.thread_ts) return false;
+  if (!isCardAuthor({ user: card.user, bot_id: card.bot_id }, cardBots, self)) {
+    return false;
+  }
+
+  await q.upsertMessage(db, {
+    slackTs: ev.thread_ts,
+    channelId: ev.channel,
+    userId: card.user || card.bot_id || "",
+    userName: card.username || card.user || card.bot_id || "",
+    text: resolveSlackMrkdwn(cardText({ text: extractMessageText(card), blocks: card.blocks })),
+    formattedText: null,
+    timestamp: slackTsToTime(ev.thread_ts).toISOString(),
+    metadata: {},
+  });
+  return true;
 }
 
 export function resolveSlackMrkdwn(text: string): string {
@@ -1433,24 +1499,37 @@ app.use("/api/*", async (c, next) => {
   let session: ORPCContext["session"] = null;
   let apiKey: ORPCContext["apiKey"] = null;
 
-  // Resolve session from cookies
-  try {
-    const auth = getAuth(dbUrl, c.env as any);
-    const s = await auth.api.getSession({ headers: c.req.raw.headers });
-    if (s?.user) {
-      session = { user: s.user as any };
+  const authHeader = c.req.header("Authorization") || "";
+  const hasBearer = authHeader.startsWith("Bearer ");
+
+  // Resolve session from cookies. A request that carries an API key and no
+  // cookies has no session to find, so skip the lookup.
+  if (!hasBearer || c.req.header("cookie")) {
+    try {
+      const auth = getAuth(dbUrl, c.env as any);
+      const s = await auth.api.getSession({ headers: c.req.raw.headers });
+      if (s?.user) {
+        session = { user: s.user as any };
+      }
+    } catch (err: any) {
+      console.error("Session resolution error:", err.message);
     }
-  } catch (err: any) {
-    console.error("Session resolution error:", err.message);
   }
 
   // Resolve API key from Bearer token (if present)
-  const authHeader = c.req.header("Authorization") || "";
-  if (authHeader.startsWith("Bearer ")) {
+  if (hasBearer) {
     try {
       apiKey = await createApiKeyContext({
         req: c.req.raw,
         databaseUrl: dbUrl,
+        // Recording when a key was last used need not hold up the response.
+        defer: (work) => {
+          try {
+            c.executionCtx.waitUntil(work);
+          } catch {
+            // No execution context (a test, or Bun): it just runs.
+          }
+        },
       });
     } catch (err: any) {
       // A rejected key gets its real reason; anything else (e.g. the
@@ -2136,6 +2215,34 @@ app.post("/events", async (c) => {
         } catch { }
       }
 
+      // Handled before the message branches below: a deletion event has no
+      // thread_ts of its own, and those branches would drop it.
+      if (ev.type === "message" && ev.subtype === "message_deleted") {
+        const marked = await handleMessageDeleted(db, ev);
+        console.log(
+          `Message deleted: channel=${ev.channel} ts=${ev.deleted_ts} marked=${marked}`,
+        );
+        return;
+      }
+
+      // A user's edit to a reply. Handled before the message branches below,
+      // which would drop an event with no thread_ts of its own.
+      if (ev.type === "message" && ev.subtype === "message_changed") {
+        if (isReplyEdit(ev.message)) {
+          const changed = await handleReplyEdited(db, {
+            channel: ev.channel,
+            ts: ev.message.ts,
+            text: resolveSlackMrkdwn(ev.message.text ?? ""),
+            formattedText: extractMessageMrkdwn({ text: ev.message.text ?? "" }),
+            editedTs: ev.message.edited?.ts,
+          });
+          console.log(
+            `Reply edited: channel=${ev.channel} ts=${ev.message.ts} updated=${changed}`,
+          );
+        }
+        return;
+      }
+
       if (ev.type === "channel_rename") {
         const renamedChannelId = ev.channel?.id || ev.channel_id;
         const renamedName = ev.channel?.name || ev.name;
@@ -2334,10 +2441,26 @@ app.post("/events", async (c) => {
         );
         if (!ch || !ch.enabled || !ch.trackReplies) return;
 
+        // In a comment channel only replies under an article card count, and
+        // the card is stored here instead of whatever the thread started with.
+        const commentConfig = parseCommentConfig(env);
+        const isCommentChannel = commentConfig.channels.has(ev.channel);
+        if (isCommentChannel) {
+          let admitted = false;
+          try {
+            admitted = await admitCommentReply(db, slack, ev, commentConfig.cardBots);
+          } catch (error) {
+            console.error("Unable to check a reply's thread:", error);
+          }
+          if (!admitted) return;
+        }
+
         // Store the parent message if not already stored
-        const existingParent = (
-          await q.getMessages(db, ev.channel, { limit: 200 })
-        ).find((m) => m.slackTs === ev.thread_ts);
+        const existingParent = isCommentChannel
+          ? true
+          : (await q.getMessages(db, ev.channel, { limit: 200 })).find(
+              (m) => m.slackTs === ev.thread_ts,
+            );
         if (!existingParent) {
           try {
             const parentHistory = await slack.conversations.history({

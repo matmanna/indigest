@@ -45,5 +45,10 @@
     "API_USERNAME": "admin",
     "LOCKDOWN_USERS": "U07VA44DNBA,U09Q8MLTE58,U07EB2Y76DP",
     "SLACK_CLIENT_ID": "2210535565.11557816933424",
+    // Comments on Slacker News articles: replies are tracked only under cards
+    // posted by these bots. Testing in a test channel with indigest's own cards;
+    // production will list #news and the Slacker News bot's user ID.
+    "COMMENT_CHANNELS": "C0CDSH7G760",
+    "COMMENT_CARD_BOTS": "self",
   },
 }
