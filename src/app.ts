@@ -26,6 +26,7 @@ import { auditActions, recordAudit } from "./lib/audit";
 import { handleMessageDeleted } from "./lib/deletions";
 import { handleReplyEdited, isReplyEdit } from "./lib/edits";
 import { cardText, isCardAuthor, parseCommentConfig } from "./lib/threads";
+import { parseTemplate, renderTemplate, safe } from "./lib/template";
 import type {
   Channel as StoreChannel,
   Message as StoreMessage,
@@ -1087,6 +1088,74 @@ export function formatForwardedMetadata(
     });
 }
 
+/**
+ * What a subscriber's message format can read. `meta` and `fields` never
+ * include private fields like `agreement`. Message text, the static
+ * metadata and the channel mention are already mrkdwn; everything else is
+ * escaped when it's output.
+ */
+export function buildFormatContext(input: {
+  text: string;
+  author: string;
+  channelId: string;
+  channelName: string;
+  link: string;
+  permalink: string;
+  timestamp: string;
+  metadata: Record<string, unknown> | null;
+  schema: { fields?: any[] } | null;
+  props: Record<string, unknown> | null;
+  staticSection: string;
+}): Record<string, unknown> {
+  const meta: Record<string, unknown> = {};
+  for (const [id, value] of Object.entries(input.metadata ?? {}))
+    if (!PRIVATE_METADATA_FIELDS.has(id) && isMetadataValueSet(value)) meta[id] = value;
+  const schemaFields: any[] = input.schema?.fields ?? [];
+  const order = [
+    ...schemaFields.map((f) => f?.action_id).filter((id) => Object.hasOwn(meta, id)),
+    ...Object.keys(meta).filter((id) => !schemaFields.some((f) => f?.action_id === id)),
+  ];
+  const fields = order.map((id) => ({
+    id,
+    label: schemaFields.find((f) => f?.action_id === id)?.label || id,
+    value: meta[id],
+  }));
+  return {
+    text: safe(input.text),
+    author: input.author,
+    channel: {
+      id: input.channelId,
+      name: input.channelName,
+      mention: safe(`<#${input.channelId}|${escapeMrkdwn(input.channelName)}>`),
+    },
+    link: input.link,
+    permalink: input.permalink,
+    date: input.timestamp,
+    meta,
+    fields,
+    props: input.props ?? {},
+    static: safe(input.staticSection),
+  };
+}
+
+/**
+ * Render a subscriber's format, or null to fall back to the default layout
+ * when it renders nothing or fails (formats are validated when saved, so a
+ * failure here means a runtime limit was hit).
+ */
+export function renderSubscriberFormat(
+  format: string,
+  input: Parameters<typeof buildFormatContext>[0],
+): string | null {
+  try {
+    const out = renderTemplate(parseTemplate(format), buildFormatContext(input)).trim();
+    return out || null;
+  } catch (err: any) {
+    console.error("renderSubscriberFormat: falling back to default:", err?.message || err);
+    return null;
+  }
+}
+
 export function findExistingForward(
   actions: q.BotAction[],
   subscriberChannelId: string,
@@ -1376,29 +1445,7 @@ export async function forwardToSubscribers(
     );
 
     try {
-      if (sourceChannel.linkMode) {
-        const payload: any = {
-          username: effectiveUsername,
-          icon_url: effectiveIcon,
-          unfurl_links: false,
-          unfurl_media: false,
-          text: [staticSection, metadataSection.trim(), footerText]
-            .filter(Boolean)
-            .join("\n"),
-          blocks: [
-            ...staticBlocks,
-            ...(metadataSection
-              ? [
-                {
-                  type: "section",
-                  block_id: "indigest_metadata",
-                  text: { type: "mrkdwn", text: metadataSection.trim() },
-                },
-              ]
-              : []),
-            { type: "context", elements: [{ type: "mrkdwn", text: footerText }] },
-          ],
-        };
+      const deliver = async (payload: any) => {
         const res = existingForward
           ? await slack.chat.update({
             channel: sub.subscriberChannelId,
@@ -1420,14 +1467,75 @@ export async function forwardToSubscribers(
             createdAt: "",
           });
         }
-        continue;
-      }
+      };
 
       const messageText = originalText
         ? originalText
         : forwardLink
           ? `<${forwardLink}|🔗 View forwarded message>`
           : msg.text || "_[no text]_";
+
+      // A sub channel's own format replaces the body; the footer stays so
+      // every forward still says where it came from.
+      const formatted = sub.format
+        ? renderSubscriberFormat(sub.format, {
+          text: sourceChannel.linkMode ? "" : messageText,
+          author: postUsername,
+          channelId: msg.channelId,
+          channelName: sourceChannel.name,
+          link: forwardLink || permalink,
+          permalink,
+          timestamp: msg.timestamp,
+          metadata: parsedMetadata,
+          schema: parsedSchema,
+          props,
+          staticSection,
+        })
+        : null;
+      if (formatted) {
+        await deliver({
+          username: effectiveUsername,
+          icon_url: effectiveIcon,
+          unfurl_links: false,
+          unfurl_media: false,
+          text: formatted.slice(0, MAX_MESSAGE_TEXT),
+          blocks: [
+            ...chunkLongText(formatted, MAX_BLOCK_TEXT).map((chunk) => ({
+              type: "section",
+              text: { type: "mrkdwn", text: chunk },
+            })),
+            { type: "context", elements: contextElements },
+          ],
+        });
+        continue;
+      }
+
+      if (sourceChannel.linkMode) {
+        await deliver({
+          username: effectiveUsername,
+          icon_url: effectiveIcon,
+          unfurl_links: false,
+          unfurl_media: false,
+          text: [staticSection, metadataSection.trim(), footerText]
+            .filter(Boolean)
+            .join("\n"),
+          blocks: [
+            ...staticBlocks,
+            ...(metadataSection
+              ? [
+                {
+                  type: "section",
+                  block_id: "indigest_metadata",
+                  text: { type: "mrkdwn", text: metadataSection.trim() },
+                },
+              ]
+              : []),
+            { type: "context", elements: [{ type: "mrkdwn", text: footerText }] },
+          ],
+        });
+        continue;
+      }
+
       const blocks: any[] = [
         ...staticBlocks,
         ...chunkLongText(messageText, MAX_BLOCK_TEXT).map((chunk) => ({
@@ -1443,7 +1551,7 @@ export async function forwardToSubscribers(
         });
       }
       blocks.push({ type: "context", elements: contextElements });
-      const payload: any = {
+      await deliver({
         username: effectiveUsername,
         icon_url: effectiveIcon,
         unfurl_links: false,
@@ -1457,28 +1565,7 @@ export async function forwardToSubscribers(
               : `📰 *${displayName}* in #${sourceChannel.name}:\n${msg.text}`)
         ).slice(0, MAX_MESSAGE_TEXT),
         blocks,
-      };
-      const res = existingForward
-        ? await slack.chat.update({
-          channel: sub.subscriberChannelId,
-          ts: existingForward.botMessageTs,
-          text: payload.text,
-          blocks: payload.blocks,
-        } as any)
-        : await slack.chat.postMessage({
-          channel: sub.subscriberChannelId,
-          ...payload,
-        });
-      if (!existingForward && res?.ts) {
-        await q.addBotAction(db, {
-          type: "pub",
-          sourceChannelId: msg.channelId,
-          sourceMessageTs: msg.slackTs,
-          botChannelId: sub.subscriberChannelId,
-          botMessageTs: res.ts,
-          createdAt: "",
-        });
-      }
+      });
     } catch (err: any) {
       console.error(
         `Failed to forward to ${sub.subscriberChannelId}:`,
@@ -2982,8 +3069,19 @@ app.post("/interactions", async (c) => {
             channelId,
             messageTs,
           );
+          // Formatted forwards are redrawn in full by forwardToSubscribers
+          // below, rather than patched with the default metadata block.
+          const formattedSubs = new Set(
+            (await q.getSubscribersBySource(db, channelId))
+              .filter((sub) => sub.format)
+              .map((sub) => sub.subscriberChannelId),
+          );
           for (const action of botActions) {
-            if (action.type === "pub" && metadataSection) {
+            if (
+              action.type === "pub" &&
+              metadataSection &&
+              !formattedSubs.has(action.botChannelId)
+            ) {
               try {
                 // Fetch the current bot message to get its blocks
                 const botMsg = await client.conversations.history({

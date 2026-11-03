@@ -124,6 +124,7 @@ export interface SubscriptionRow {
   sourceChannelId: string;
   profileName?: string | null;
   profileImageUrl?: string | null;
+  format?: string | null;
   createdAt: string;
   sourceName: string;
   subscriberName: string;

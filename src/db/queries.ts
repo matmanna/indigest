@@ -53,6 +53,7 @@ export interface Subscription {
   sourceChannelId: string;
   profileName?: string | null;
   profileImageUrl?: string | null;
+  format?: string | null;
   createdAt: string;
 }
 
@@ -186,6 +187,7 @@ function rowToSubscription(r: any): Subscription {
     sourceChannelId: r.sourceChannelId,
     profileName: r.profileName ?? null,
     profileImageUrl: r.profileImageUrl ?? null,
+    format: r.format ?? null,
     createdAt: r.createdAt,
   };
 }
@@ -671,12 +673,17 @@ export async function updateSubscriptionOverrides(
   db: DB,
   subscriberChannelId: string,
   sourceChannelId: string,
-  overrides: { profileName?: string | null; profileImageUrl?: string | null },
+  overrides: {
+    profileName?: string | null;
+    profileImageUrl?: string | null;
+    format?: string | null;
+  },
 ): Promise<void> {
   const set: Record<string, string | null> = {};
   if (overrides.profileName !== undefined) set.profileName = overrides.profileName;
   if (overrides.profileImageUrl !== undefined)
     set.profileImageUrl = overrides.profileImageUrl;
+  if (overrides.format !== undefined) set.format = overrides.format;
   if (Object.keys(set).length === 0) return;
   await db
     .update(schema.subscriptions)

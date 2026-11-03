@@ -71,6 +71,8 @@ export const subscriptions = pgTable(
     sourceChannelId: text("source_channel_id").notNull(),
     profileName: text("profile_name"),
     profileImageUrl: text("profile_image_url"),
+    // Custom message format (see src/lib/template.ts). Null uses the default.
+    format: text("format"),
     createdAt: text("created_at").notNull().default("now()"),
   },
   (t) => ({
