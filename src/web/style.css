@@ -2619,7 +2619,14 @@ dialog.palette::backdrop {
   background: var(--surface-2);
   color: var(--text-2);
   font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  flex: none;
   cursor: pointer;
+}
+/* One text run, so the count and the revoked note never split or wrap apart. */
+.subkey-label {
+  white-space: nowrap;
 }
 .subkey-toggle:hover {
   color: var(--text);
