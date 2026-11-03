@@ -103,6 +103,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("comment replies", () => {
     metadataSchema: "",
     metadataRequired: false,
     properties: "",
+    staticMetadata: "",
     createdAt: "",
   });
 

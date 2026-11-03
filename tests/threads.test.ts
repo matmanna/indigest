@@ -196,6 +196,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("GET /api/threads", () => {
       metadataSchema: "",
       metadataRequired: false,
       properties: "",
+      staticMetadata: "",
       createdAt: "",
     });
     const { fullKey, keyPrefix, secretHash } = generateApiKey();
