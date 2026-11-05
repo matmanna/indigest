@@ -1156,6 +1156,19 @@ export function renderSubscriberFormat(
   }
 }
 
+/**
+ * Pick the format a forward to `sub` uses: a locked publisher format, then
+ * the subscriber's own, then the publisher's default. Null means the default
+ * layout. A lock without a publisher format does nothing.
+ */
+export function resolveForwardFormat(
+  source: { forwardFormat?: string | null; forwardFormatLocked?: boolean },
+  sub: { format?: string | null },
+): string | null {
+  if (source.forwardFormatLocked && source.forwardFormat) return source.forwardFormat;
+  return sub.format || source.forwardFormat || null;
+}
+
 export function findExistingForward(
   actions: q.BotAction[],
   subscriberChannelId: string,
@@ -1475,10 +1488,11 @@ export async function forwardToSubscribers(
           ? `<${forwardLink}|🔗 View forwarded message>`
           : msg.text || "_[no text]_";
 
-      // A sub channel's own format replaces the body; the footer stays so
-      // every forward still says where it came from.
-      const formatted = sub.format
-        ? renderSubscriberFormat(sub.format, {
+      // A format (the sub channel's own, or the publisher's) replaces the
+      // body; the footer stays so every forward still says where it came from.
+      const format = resolveForwardFormat(sourceChannel, sub);
+      const formatted = format
+        ? renderSubscriberFormat(format, {
           text: sourceChannel.linkMode ? "" : messageText,
           author: postUsername,
           channelId: msg.channelId,
@@ -3073,7 +3087,7 @@ app.post("/interactions", async (c) => {
           // below, rather than patched with the default metadata block.
           const formattedSubs = new Set(
             (await q.getSubscribersBySource(db, channelId))
-              .filter((sub) => sub.format)
+              .filter((sub) => resolveForwardFormat(channel, sub))
               .map((sub) => sub.subscriberChannelId),
           );
           for (const action of botActions) {

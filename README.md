@@ -118,6 +118,15 @@ a subscribing channel can rewrite how forwards from a source read, using a small
 {{ link | link: "Read more" }}
 ```
 
+a pub'd channel can also set a **forward format** for all its subscribers, in the **Forward format** card on its own Pub/Sub tab. which format a forward uses:
+
+1. the source's format, if the source has **locked** it
+2. otherwise the subscribing channel's own format
+3. otherwise the source's format
+4. otherwise the default layout
+
+a lock with no source format does nothing. if the chosen format renders nothing or hits a limit, that forward uses the default layout. it doesn't fall back to the next format in the list. the source format is stored in `channels.forward_format` and the lock in `channels.forward_format_locked`, so apply them with `bun run db:push`.
+
 - **values:** `text` (the message), `author`, `channel.name` / `channel.mention`, `link`, `date`, `meta.<field>`, `fields` (each with `id`, `label`, `value`), `props.<name>` (source channel properties), `static` (static metadata)
 - **tags:** `if` / `elif` / `else`, `unless`, `for … in … limit: n` with `loop.index` / `first` / `last` and an `else` for empty lists, `assign`, `{# comments #}`, and `{%- -%}` to trim whitespace
 - **conditions:** `==`, `!=`, `<`, `>`, `<=`, `>=`, `contains`, `and`, `or`, `not`, parentheses, `empty`
