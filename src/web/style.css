@@ -2908,17 +2908,6 @@ dialog.palette::backdrop {
   max-height: 520px;
   overflow-y: auto;
 }
-.slack-modal-body hr {
-  border: none;
-  border-top: 1px solid var(--border);
-  margin: 6px 0 8px;
-  width: 100%;
-}
-.slack-modal-header-block {
-  font-size: 17px;
-  font-weight: 700;
-  overflow-wrap: anywhere;
-}
 .slack-modal-empty {
   color: var(--text-3);
   margin: 8px 0;

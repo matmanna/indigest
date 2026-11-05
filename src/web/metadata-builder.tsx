@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { Icon, Switch } from "./ui";
+import { Icon, Switch, type IconName } from "./ui";
 import {
   FIELD_TYPES,
   SCHEMA_LIMITS,
@@ -571,19 +571,18 @@ function OptionsEditor({
 }
 
 function TypeGlyph({ type }: { type: string }) {
-  const glyph: Record<string, string> = {
-    plain_text_input: "Aa",
-    url_text_input: "🔗",
-    email_text_input: "@",
-    number_input: "#",
-    static_select: "▾",
-    multi_static_select: "☰",
-    datepicker: "📅",
-    file_input: "⇪",
+  const icons: Record<string, IconName> = {
+    url_text_input: "link",
+    static_select: "chevronDown",
+    multi_static_select: "list",
+    datepicker: "calendar",
+    file_input: "upload",
   };
+  const text: Record<string, string> = { plain_text_input: "Aa", email_text_input: "@", number_input: "#" };
+  const icon = icons[type];
   return (
     <span className="mb-glyph" aria-hidden="true">
-      {glyph[type] ?? "?"}
+      {icon ? <Icon name={icon} size={14} /> : (text[type] ?? "?")}
     </span>
   );
 }
@@ -606,8 +605,6 @@ function SlackModalPreview({
         <span aria-hidden="true">×</span>
       </div>
       <div className="slack-modal-body">
-        <div className="slack-modal-header-block">{title}</div>
-        <hr />
         {schema.fields.length === 0 && <p className="slack-modal-empty">Add a question to see it here.</p>}
         {schema.fields.map((f, i) => (
           <div
@@ -651,7 +648,7 @@ function PreviewElement({ field: f }: { field: SchemaField }) {
       return (
         <div className="slack-el slack-select">
           <span className={f.initial_value ? "" : "ph"}>{f.initial_value || ph || "Select a date"}</span>
-          <span aria-hidden="true">📅</span>
+          <Icon name="calendar" size={14} />
         </div>
       );
     case "file_input":
