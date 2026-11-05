@@ -2655,3 +2655,22 @@ dialog.palette::backdrop {
   border-bottom-left-radius: 6px;
   flex-shrink: 0;
 }
+
+/* Subscriber message format preview */
+.mrkdwn-preview {
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.mrkdwn-preview blockquote {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-2);
+}
+.mrkdwn-preview code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  font-size: 12.5px;
+}

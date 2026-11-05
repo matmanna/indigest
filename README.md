@@ -106,6 +106,34 @@ forwards from a given source. The override is either a literal value/URL, or a
 
 Unset or unresolved overrides fall back to the original author's name/picture.
 
+## custom message formats
+
+a subscribing channel can rewrite how forwards from a source read, using a small Liquid-style template. open the channel's **Pub/Sub** tab in the dashboard and click **Format** on a subscription. you get a live preview built from the source channel's metadata fields. the "Forwarded from" footer is always added below.
+
+```
+{% if meta.priority == "high" %}:rotating_light: {% endif %}*{{ meta.title | default: "New post" }}*
+{{ text | truncate: 280 }}
+{% for f in fields %}
+• *{{ f.label }}:* {{ f.value }}{% endfor %}
+{{ link | link: "Read more" }}
+```
+
+a pub'd channel can also set a **forward format** for all its subscribers, in the **Forward format** card on its own Pub/Sub tab. which format a forward uses:
+
+1. the source's format, if the source has **locked** it
+2. otherwise the subscribing channel's own format
+3. otherwise the source's format
+4. otherwise the default layout
+
+a lock with no source format does nothing. if the chosen format renders nothing or hits a limit, that forward uses the default layout. it doesn't fall back to the next format in the list. the source format is stored in `channels.forward_format` and the lock in `channels.forward_format_locked`, so apply them with `bun run db:push`.
+
+- **values:** `text` (the message), `author`, `channel.name` / `channel.mention`, `link`, `date`, `meta.<field>`, `fields` (each with `id`, `label`, `value`), `props.<name>` (source channel properties), `static` (static metadata)
+- **tags:** `if` / `elif` / `else`, `unless`, `for … in … limit: n` with `loop.index` / `first` / `last` and an `else` for empty lists, `assign`, `{# comments #}`, and `{%- -%}` to trim whitespace
+- **conditions:** `==`, `!=`, `<`, `>`, `<=`, `>=`, `contains`, `and`, `or`, `not`, parentheses, `empty`
+- **filters:** `upper`, `lower`, `capitalize`, `strip`, `default`, `truncate`, `replace`, `split`, `join`, `size`, `first`, `last`, `sort`, `reverse`, `uniq`, `plus`, `minus`, `times`, `round`, `plural`, `date` (in each reader's timezone), `link`, `bold`, `italic`, `strike`, `code`, `quote`, `bullets`
+
+formats are sandboxed. they're parsed, never run as code, and only see their own data. values are escaped for Slack, so metadata can't add mentions or links, and formats themselves can't use @channel, @here or group mentions. size, nesting, loops and output are all capped. a broken format can't be saved, and if one renders nothing or hits a limit, that forward uses the default layout. the `agreement` field is never available to formats.
+
 ## deleted messages
 
 when Slack reports a message deleted, indigest keeps the row but sets `messages.deleted_at`. The content stays in the database; every query that returns messages skips deleted rows, so deleted content is never served by the API, feeds, webhooks or forwards. `tests/deleted-messages.test.ts` guards this, including a check that every read of the table filters them out. A late edit event cannot revive or rewrite a deleted message.

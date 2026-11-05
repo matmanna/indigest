@@ -108,6 +108,8 @@ export interface Channel {
   metadataRequired: boolean;
   properties: string;
   staticMetadata: string;
+  forwardFormat?: string | null;
+  forwardFormatLocked?: boolean;
   createdAt: string;
   canManage?: boolean;
 }
@@ -124,6 +126,7 @@ export interface SubscriptionRow {
   sourceChannelId: string;
   profileName?: string | null;
   profileImageUrl?: string | null;
+  format?: string | null;
   createdAt: string;
   sourceName: string;
   subscriberName: string;
