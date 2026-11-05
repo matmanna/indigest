@@ -606,8 +606,6 @@ function SlackModalPreview({
         <span aria-hidden="true">×</span>
       </div>
       <div className="slack-modal-body">
-        <div className="slack-modal-header-block">{title}</div>
-        <hr />
         {schema.fields.length === 0 && <p className="slack-modal-empty">Add a question to see it here.</p>}
         {schema.fields.map((f, i) => (
           <div

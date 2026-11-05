@@ -23,13 +23,8 @@ function buildBlocks(
   schema: MetadataSchema,
   initialMetadata: Record<string, any> = {},
 ): any[] {
-  const blocks: any[] = [
-    {
-      type: "header",
-      text: { type: "plain_text", text: schema.title, emoji: true },
-    },
-    { type: "divider" },
-  ];
+  // The title is already in the modal's title bar, so the body starts with the fields.
+  const blocks: any[] = [];
 
   for (const field of schema.fields) {
     const element: any = { type: field.type, action_id: field.action_id };
@@ -108,6 +103,13 @@ function buildBlocks(
       element,
     });
   }
+
+  // Slack refuses a modal with no blocks.
+  if (blocks.length === 0)
+    blocks.push({
+      type: "section",
+      text: { type: "plain_text", text: "This form has no fields yet." },
+    });
 
   return blocks;
 }
