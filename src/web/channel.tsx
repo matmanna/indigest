@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { renderPage } from "./layout";
+import { MetadataBuilder, schemaProblems, schemaToSave } from "./metadata-builder";
 import { authClient } from "../lib/auth-client";
 import { signIn } from "./shell";
 import {
@@ -574,28 +575,22 @@ function MetadataTab({ ch, canManage, save }: Ctx) {
         canManage={canManage}
         initial={{ schema: prettyJson(ch.metadataSchema, ""), required: ch.metadataRequired }}
         onSave={(v) =>
-          jsonError(v.schema, "schema")
+          schemaProblems(v.schema).length
             ? Promise.resolve(false)
-            : save({ metadataSchema: v.schema.trim(), metadataRequired: v.required }, "Metadata schema saved")
+            : save(
+                {
+                  metadataSchema: schemaToSave(v.schema),
+                  metadataRequired: schemaToSave(v.schema) ? v.required : false,
+                },
+                "Metadata schema saved",
+              )
         }
       >
         {(v, set) => {
-          const err = jsonError(v.schema, "schema");
           return (
             <>
               <div className="card-body">
-                <div className="field">
-                  <textarea
-                    className="textarea"
-                    rows={10}
-                    spellCheck={false}
-                    disabled={!canManage}
-                    placeholder={'{\n  "title": "Metadata",\n  "fields": [\n    { "action_id": "title", "label": "Title", "type": "plain_text_input" }\n  ]\n}'}
-                    value={v.schema}
-                    onChange={(e) => set({ ...v, schema: e.currentTarget.value })}
-                  />
-                  {err && <span className="field-error">{err}</span>}
-                </div>
+                <MetadataBuilder value={v.schema} disabled={!canManage} onChange={(schema) => set({ ...v, schema })} />
               </div>
               <Setting
                 title="Require metadata"
@@ -603,7 +598,7 @@ function MetadataTab({ ch, canManage, save }: Ctx) {
                   <Switch
                     label="Require metadata"
                     checked={v.required}
-                    disabled={!canManage || !v.schema.trim()}
+                    disabled={!canManage || !schemaToSave(v.schema)}
                     onChange={(required) => set({ ...v, required })}
                   />
                 }

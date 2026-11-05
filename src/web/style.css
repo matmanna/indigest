@@ -2655,3 +2655,346 @@ dialog.palette::backdrop {
   border-bottom-left-radius: 6px;
   flex-shrink: 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* Metadata form builder                                               */
+/* ------------------------------------------------------------------ */
+
+.mb {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.mb-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.mb-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: 24px;
+  align-items: start;
+}
+.mb-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.mb-preview-wrap {
+  position: sticky;
+  top: 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mb-form-settings,
+.mb-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.mb-label-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mb-count {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.mb-count.over {
+  color: var(--danger);
+}
+.mb-fields {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mb-field {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+}
+.mb-field.open {
+  border-color: var(--border-focus);
+  background: var(--surface);
+}
+.mb-field.invalid {
+  border-color: var(--danger-border);
+}
+.mb-field-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
+}
+.mb-field-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.mb-field-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.mb-field-title em {
+  color: var(--text-3);
+}
+.mb-field-actions {
+  display: flex;
+  gap: 2px;
+}
+.mb-rot {
+  display: inline-flex;
+  transform: rotate(180deg);
+}
+.mb-field-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 12px 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.mb-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.mb-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+.mb-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+}
+.mb-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mb-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mb-option .input {
+  height: 34px;
+}
+.mb-option input[type="radio"] {
+  accent-color: var(--inv);
+  flex-shrink: 0;
+}
+.mb-option-actions {
+  display: flex;
+  gap: 4px;
+}
+.mb-bulk {
+  min-height: 0;
+}
+.mb-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mb-add-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+.mb-add-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 42px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.mb-add-btn:hover {
+  border-style: solid;
+  border-color: var(--hover-border);
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+/* Slack modal mock */
+.slack-modal {
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+  font-size: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+.slack-modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 17px;
+}
+.slack-modal-head span {
+  color: var(--text-3);
+  font-size: 20px;
+  line-height: 1;
+}
+.slack-modal-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 520px;
+  overflow-y: auto;
+}
+.slack-modal-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 6px 0 8px;
+  width: 100%;
+}
+.slack-modal-header-block {
+  font-size: 17px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.slack-modal-empty {
+  color: var(--text-3);
+  margin: 8px 0;
+}
+.slack-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+  margin: 0 -8px;
+  border-radius: 8px;
+  cursor: pointer;
+  outline: none;
+}
+.slack-input:hover,
+.slack-input:focus-visible {
+  background: var(--row-hover);
+}
+.slack-input.active {
+  box-shadow: inset 0 0 0 1px var(--border-focus);
+}
+.slack-input-label {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.slack-input-label span {
+  font-weight: 400;
+  color: var(--text-3);
+}
+.slack-el {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.slack-el.multiline {
+  min-height: 72px;
+  align-items: flex-start;
+  padding-top: 8px;
+}
+.slack-el .ph {
+  color: var(--placeholder);
+}
+.slack-file {
+  justify-content: center;
+  min-height: 56px;
+  border-style: dashed;
+  color: var(--text-3);
+  font-size: 13px;
+  text-align: center;
+}
+.slack-modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.slack-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  font-weight: 700;
+  font-size: 14px;
+}
+.slack-btn.primary {
+  background: #007a5a;
+  border-color: #007a5a;
+  color: #fff;
+}
+
+@media (max-width: 900px) {
+  .mb-layout {
+    grid-template-columns: 1fr;
+  }
+  .mb-preview-wrap {
+    position: static;
+  }
+}
+@media (max-width: 560px) {
+  .mb-form-settings,
+  .mb-grid {
+    grid-template-columns: 1fr;
+  }
+  .mb-field-toggle .badge.outline {
+    display: none;
+  }
+}
