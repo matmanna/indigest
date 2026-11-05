@@ -23,6 +23,10 @@ export interface Channel {
   properties: string;
   /** Static mrkdwn shown in bold above every forward. Empty means none. */
   staticMetadata: string;
+  /** Default format for forwards to subscribers. Null or absent means the default layout. */
+  forwardFormat?: string | null;
+  /** When true, forwardFormat replaces subscribers' own formats. */
+  forwardFormatLocked?: boolean;
   createdAt: string;
 }
 
@@ -53,6 +57,7 @@ export interface Subscription {
   sourceChannelId: string;
   profileName?: string | null;
   profileImageUrl?: string | null;
+  format?: string | null;
   createdAt: string;
 }
 
@@ -149,6 +154,8 @@ function rowToChannel(r: any): Channel {
     metadataRequired: parseBool(r.metadataRequired),
     properties: r.properties || "{}",
     staticMetadata: r.staticMetadata || "",
+    forwardFormat: r.forwardFormat || null,
+    forwardFormatLocked: parseBool(r.forwardFormatLocked),
     createdAt: r.createdAt,
   };
 }
@@ -186,6 +193,7 @@ function rowToSubscription(r: any): Subscription {
     sourceChannelId: r.sourceChannelId,
     profileName: r.profileName ?? null,
     profileImageUrl: r.profileImageUrl ?? null,
+    format: r.format ?? null,
     createdAt: r.createdAt,
   };
 }
@@ -225,6 +233,8 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
       metadataRequired: ch.metadataRequired ? "1" : "0",
       properties: ch.properties,
       staticMetadata: ch.staticMetadata,
+      forwardFormat: ch.forwardFormat ?? null,
+      forwardFormatLocked: ch.forwardFormatLocked ? "1" : "0",
       createdAt: sql`COALESCE(NULLIF((SELECT created_at FROM channels WHERE id = ${ch.id}), ''), to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))`,
     })
     .onConflictDoUpdate({
@@ -245,6 +255,11 @@ export async function upsertChannel(db: DB, ch: Channel): Promise<void> {
         metadataRequired: ch.metadataRequired ? "1" : "0",
         properties: ch.properties,
         staticMetadata: ch.staticMetadata,
+        // Records built from scratch leave these out; don't wipe a saved format.
+        ...(ch.forwardFormat !== undefined ? { forwardFormat: ch.forwardFormat } : {}),
+        ...(ch.forwardFormatLocked !== undefined
+          ? { forwardFormatLocked: ch.forwardFormatLocked ? "1" : "0" }
+          : {}),
       },
     });
 }
@@ -671,12 +686,17 @@ export async function updateSubscriptionOverrides(
   db: DB,
   subscriberChannelId: string,
   sourceChannelId: string,
-  overrides: { profileName?: string | null; profileImageUrl?: string | null },
+  overrides: {
+    profileName?: string | null;
+    profileImageUrl?: string | null;
+    format?: string | null;
+  },
 ): Promise<void> {
   const set: Record<string, string | null> = {};
   if (overrides.profileName !== undefined) set.profileName = overrides.profileName;
   if (overrides.profileImageUrl !== undefined)
     set.profileImageUrl = overrides.profileImageUrl;
+  if (overrides.format !== undefined) set.format = overrides.format;
   if (Object.keys(set).length === 0) return;
   await db
     .update(schema.subscriptions)

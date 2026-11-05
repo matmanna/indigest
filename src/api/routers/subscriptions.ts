@@ -18,6 +18,7 @@ import {
 } from "../../db/queries";
 import { invalidateGraphCache } from "../../lib/graph-cache";
 import { auditActions, diff } from "../../lib/audit";
+import { TEMPLATE_LIMITS, validateTemplate } from "../../lib/template";
 
 const pairSchema = z.object({
   subscriberChannelId: z.string().min(1),
@@ -26,6 +27,17 @@ const pairSchema = z.object({
 
 // A static value, or a `[property]` resolved against the source channel.
 const overrideSchema = z.string().trim().max(512).nullable();
+
+// A message format, checked here so a broken one never reaches a forward.
+/** A message format template: validated on save, null clears it. */
+export const formatSchema = z
+  .string()
+  .max(TEMPLATE_LIMITS.source)
+  .nullable()
+  .superRefine((v, ctx) => {
+    const err = v ? validateTemplate(v) : null;
+    if (err) ctx.addIssue({ code: "custom", message: err });
+  });
 
 export const listSubscriptions = publicProcedure
   .route({ method: "GET", path: "/subscriptions" })
@@ -112,6 +124,7 @@ export const updateSubscription = authRequiredProcedure
     pairSchema.extend({
       profileName: overrideSchema.optional(),
       profileImageUrl: overrideSchema.optional(),
+      format: formatSchema.optional(),
     }),
   )
   .handler(async ({ input, context }) => {
@@ -136,6 +149,8 @@ export const updateSubscription = authRequiredProcedure
     const overrides = {
       profileName: blankToNull(input.profileName),
       profileImageUrl: blankToNull(input.profileImageUrl),
+      format:
+        input.format === undefined ? undefined : input.format?.trim() ? input.format : null,
     };
     await dbUpdateSubscriptionOverrides(
       context.db,
@@ -152,6 +167,7 @@ export const updateSubscription = authRequiredProcedure
         {
           profileName: current.profileName ?? null,
           profileImageUrl: current.profileImageUrl ?? null,
+          format: current.format ?? null,
         },
         // Only fields left out of the request keep their old value; a
         // cleared field (null) must show up as cleared.
@@ -164,6 +180,10 @@ export const updateSubscription = authRequiredProcedure
             overrides.profileImageUrl === undefined
               ? (current.profileImageUrl ?? null)
               : overrides.profileImageUrl,
+          format:
+            overrides.format === undefined
+              ? (current.format ?? null)
+              : overrides.format,
         },
       ),
     });

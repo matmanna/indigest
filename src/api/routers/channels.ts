@@ -22,6 +22,7 @@ import { validateMetadataSchema } from "../../lib/metadata-schema";
 import { canCreateApiKeyForChannel } from "./apiKeys";
 import { invalidateGraphCache } from "../../lib/graph-cache";
 import { auditActions, diff } from "../../lib/audit";
+import { formatSchema } from "./subscriptions";
 
 const channelSchema = z.object({
   id: z.string(),
@@ -40,6 +41,8 @@ const channelSchema = z.object({
   metadataRequired: z.boolean(),
   properties: z.string(),
   staticMetadata: z.string(),
+  forwardFormat: formatSchema.optional(),
+  forwardFormatLocked: z.boolean().optional(),
   createdAt: z.string(),
 });
 
@@ -105,6 +108,8 @@ const channelPatchSchema = z.object({
   metadataRequired: z.boolean().optional(),
   properties: propertiesSchema.optional(),
   staticMetadata: z.string().max(2000).optional(),
+  forwardFormat: formatSchema.optional(),
+  forwardFormatLocked: z.boolean().optional(),
 });
 
 export type ChannelPatch = z.infer<typeof channelPatchSchema>;
@@ -122,6 +127,9 @@ export function applyChannelPatch(ch: Channel, patch: ChannelPatch): Channel {
       : "";
   if (patch.staticMetadata !== undefined)
     next.staticMetadata = patch.staticMetadata.trim();
+  // A blank format is no format.
+  if (patch.forwardFormat !== undefined)
+    next.forwardFormat = patch.forwardFormat?.trim() ? patch.forwardFormat : null;
   if (patch.properties !== undefined)
     next.properties = patch.properties
       ? JSON.stringify(JSON.parse(patch.properties))

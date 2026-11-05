@@ -29,6 +29,11 @@ export const channels = pgTable("channels", {
   // Static mrkdwn shown in bold above every forward, e.g. "New Edition of
   // Happenings!". Meant for auto-pub channels, which never see the metadata modal.
   staticMetadata: text("static_metadata").notNull().default(""),
+  // Default message format for forwards to subscribing channels (see
+  // src/lib/template.ts). Null means the default layout.
+  forwardFormat: text("forward_format"),
+  // "1" makes forwardFormat apply even where a subscriber set its own format.
+  forwardFormatLocked: text("forward_format_locked").notNull().default("0"),
   createdAt: text("created_at").notNull().default(""),
   accessPermUsers: text("access_perm_users").notNull().default("*"),
 });
@@ -71,6 +76,8 @@ export const subscriptions = pgTable(
     sourceChannelId: text("source_channel_id").notNull(),
     profileName: text("profile_name"),
     profileImageUrl: text("profile_image_url"),
+    // Custom message format (see src/lib/template.ts). Null uses the default.
+    format: text("format"),
     createdAt: text("created_at").notNull().default("now()"),
   },
   (t) => ({
