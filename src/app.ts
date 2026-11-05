@@ -27,6 +27,7 @@ import { handleMessageDeleted } from "./lib/deletions";
 import { handleReplyEdited, isReplyEdit } from "./lib/edits";
 import { cardText, isCardAuthor, parseCommentConfig } from "./lib/threads";
 import { parseTemplate, renderTemplate, safe } from "./lib/template";
+import { validateMetadataSchema } from "./lib/metadata-schema";
 import type {
   Channel as StoreChannel,
   Message as StoreMessage,
@@ -4775,9 +4776,18 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
               }
               try {
                 const parsed = JSON.parse(arg);
-                if (!parsed.fields || !Array.isArray(parsed.fields)) {
+                if (!parsed?.fields || !Array.isArray(parsed.fields)) {
                   await respond(
                     'Schema must have a \`fields\` array. Example: \`{"title": "Metadata", "fields": [{"action_id": "title", "label": "Title", "type": "plain_text_input"}]}\`',
+                  );
+                  return;
+                }
+                const [problem] = validateMetadataSchema(parsed);
+                if (problem) {
+                  await respond(
+                    problem.field === null
+                      ? "Invalid schema: " + problem.message
+                      : "Invalid schema, field " + (problem.field + 1) + ": " + problem.message,
                   );
                   return;
                 }
