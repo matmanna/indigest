@@ -220,7 +220,7 @@ function OverviewTab({ ch, subs }: Ctx & { subs: SubscriptionRow[] | null }) {
             <dt>Feed access</dt>
             <dd>{accessLabel(ch)}</dd>
             <dt>Webhook</dt>
-            <dd className="mono small">{ch.webhookUrl || <span className="muted">none</span>}</dd>
+            <dd className="mono small">{ch.webhookUrl || <span className="muted">{ch.hasWebhook ? "set (only managers can see it)" : "none"}</span>}</dd>
             <dt>Created</dt>
             <dd>{fmtDate(ch.createdAt)}</dd>
           </dl>

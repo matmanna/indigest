@@ -81,7 +81,7 @@ function Home() {
   const recent = pubd
     ? [...pubd].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).slice(0, 5)
     : null;
-  const webhooks = pubd ? pubd.filter((c) => c.webhookUrl).length : null;
+  const webhooks = pubd ? pubd.filter((c) => c.hasWebhook || c.webhookUrl).length : null;
   const first = session?.user?.name?.split(" ")[0];
 
   return (

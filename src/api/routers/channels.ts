@@ -147,6 +147,19 @@ export function applyChannelPatch(ch: Channel, patch: ChannelPatch): Channel {
   return next;
 }
 
+/**
+ * A channel as anyone may see it. The webhook URL is a credential: whoever has
+ * it can post fake "message approved" events to the receiver. Only people who
+ * can manage the channel get it; everyone else learns only whether one is set.
+ */
+export function toPublicChannel<T extends Channel>(ch: T): T & { hasWebhook: boolean } {
+  return { ...ch, webhookUrl: "", hasWebhook: Boolean(ch.webhookUrl) };
+}
+
+function withWebhookFlag<T extends Channel>(ch: T): T & { hasWebhook: boolean } {
+  return { ...ch, hasWebhook: Boolean(ch.webhookUrl) };
+}
+
 export const listChannels = publicProcedure
   .route({ method: "GET", path: "/channels" })
   .input(
@@ -158,7 +171,7 @@ export const listChannels = publicProcedure
     const channels = input.enabled
       ? await dbListEnabledChannels(context.db)
       : await dbListChannels(context.db);
-    return channels;
+    return channels.map(toPublicChannel);
   });
 
 /** Every known channel, flagged with whether the caller may manage it. */
@@ -176,7 +189,7 @@ export const listManageable = authRequiredProcedure
       lockdown: context.lockdownUsers.length > 0,
       isAdmin: !!slackId && context.lockdownUsers.includes(slackId),
       channels: channels.map((ch) => ({
-        ...ch,
+        ...(manageable.has(ch.id) ? withWebhookFlag(ch) : toPublicChannel(ch)),
         canManage: manageable.has(ch.id),
       })),
     };
@@ -188,7 +201,10 @@ export const getChannel = publicProcedure
   .handler(async ({ input, context }) => {
     const ch = await dbGetChannel(context.db, input.id);
     if (!ch) throw new ORPCError("NOT_FOUND", { message: "Channel not found" });
-    return ch;
+    const slackId = context.session?.user?.slackId;
+    return (await canManageChannel(context, ch.id, slackId))
+      ? withWebhookFlag(ch)
+      : toPublicChannel(ch);
   });
 
 /** Whether the signed-in user may change this channel's settings. */
@@ -350,7 +366,9 @@ export const listByUser = authOrApiKeyProcedure
         }),
       })),
     );
-    return visible.filter(({ allowed }) => allowed).map(({ ch }) => ch);
+    return visible
+      .filter(({ allowed }) => allowed)
+      .map(({ ch }) => toPublicChannel(ch));
   });
 
 export const channelRouter = {
