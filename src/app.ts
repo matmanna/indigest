@@ -2205,7 +2205,12 @@ app.get("/spec.json", (c) => {
             teamId: { type: "string" },
             enabled: { type: "boolean" },
             linkMode: { type: "boolean" },
-            webhookUrl: { type: "string" },
+            webhookUrl: {
+              type: "string",
+              description:
+                "Empty unless the caller can manage the channel. Use hasWebhook to see whether one is set.",
+            },
+            hasWebhook: { type: "boolean" },
             autoApproveUsers: { type: "array", items: { type: "string" } },
             manualUsers: { type: "array", items: { type: "string" } },
             approvedPosters: { type: "array", items: { type: "string" } },
@@ -4587,7 +4592,9 @@ const slackSlashCommand = async (c: any) => {  const env = c.env;
             if (ch.triggerMode === "shortcut") {
               msg += `\nTrigger: shortcut only (no auto/manual publishing from messages)`;
             }
-            if (ch.webhookUrl) msg += `\nWebhook: ${ch.webhookUrl}`;
+            // The URL is a credential, so only the creator and lockdown admins see it.
+            if (ch.webhookUrl)
+              msg += perms.length > 0 ? `\nWebhook: ${ch.webhookUrl}` : `\nWebhook: set`;
             if (ch.autoApproveUsers.length > 0) {
               const autoLabel = ch.autoApproveUsers.includes("*")
                 ? "all users"
@@ -5188,7 +5195,7 @@ app.get("/api/graph", async (c) => {
       data: {
         channelId: ch.id,
         name: ch.name,
-        webhookUrl: ch.webhookUrl,
+        hasWebhook: Boolean(ch.webhookUrl),
         metadataSchema: ch.metadataSchema,
         metadataRequired: ch.metadataRequired,
         trackReplies: ch.trackReplies,
@@ -5229,7 +5236,8 @@ app.get("/api/graph", async (c) => {
         id: `wh:${ch.id}`,
         type: "feed",
         label: "Webhook",
-        data: { feedType: "webhook", channelId: ch.id, url: ch.webhookUrl },
+        // Not the URL itself: the graph is public, and the URL is a credential.
+        data: { feedType: "webhook", channelId: ch.id },
       });
       edges.push({
         id: `e-wh-${ch.id}`,
@@ -5253,7 +5261,7 @@ app.get("/api/graph", async (c) => {
           data: {
             channelId: sub.subscriberChannelId,
             name: subCh?.name,
-            webhookUrl: subCh?.webhookUrl,
+            hasWebhook: Boolean(subCh?.webhookUrl),
             metadataSchema: subCh?.metadataSchema,
             metadataRequired: subCh?.metadataRequired,
             trackReplies: subCh?.trackReplies,

@@ -97,7 +97,9 @@ export interface Channel {
   teamId: string;
   enabled: boolean;
   linkMode: boolean;
+  /** Empty unless you can manage the channel; see hasWebhook. */
   webhookUrl: string;
+  hasWebhook?: boolean;
   autoApproveUsers: string[];
   manualUsers: string[];
   triggerMode: "message" | "shortcut";
