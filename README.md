@@ -118,6 +118,10 @@ Apply the new column with `bun run db:push`.
 
 channel managers can define a metadata form that opens in a **modal** when someone clicks **Yep!** on a message in manual mode.
 
+the easiest way to build one is the dashboard: open the channel, go to **Metadata & properties**, and add questions with the visual builder. pick a type (text, dropdown, multi-select, link, email, number, date or file upload), set the label, placeholder, default and whether it's required, and edit dropdown options in place or paste a list. a live preview shows the Slack modal as approvers will see it, and clicking a question in the preview opens it in the editor. there's a JSON view for anything the builder doesn't cover; keys it doesn't know about are kept.
+
+schemas are checked against Slack's modal limits when saved, from the dashboard, the API or `/in schema set`: the form title and submit button are limited to 24 characters, IDs must be unique and use only letters, numbers, `-` and `_`, and dropdowns need at least one option with unique values. a schema that breaks a limit is rejected with the field and the problem, instead of failing later when someone opens the modal.
+
 <img width="804" height="685" alt="image" src="https://github.com/user-attachments/assets/10c2d72f-85b7-43f2-b5bb-ed222c6e25c1" />
 
 ```

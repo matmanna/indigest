@@ -18,6 +18,7 @@ import {
   upsertChannel as dbUpsertChannel,
 } from "../../db/queries";
 import type { Channel } from "../../db/queries";
+import { validateMetadataSchema } from "../../lib/metadata-schema";
 import { canCreateApiKeyForChannel } from "./apiKeys";
 import { invalidateGraphCache } from "../../lib/graph-cache";
 import { auditActions, diff } from "../../lib/audit";
@@ -54,18 +55,22 @@ const webhookUrlSchema = z
 const metadataSchemaSchema = z
   .string()
   .max(20_000)
-  .refine(
-    (v) => {
-      if (v === "") return true;
-      try {
-        const parsed = JSON.parse(v);
-        return Array.isArray(parsed?.fields);
-      } catch {
-        return false;
-      }
-    },
-    { message: "Metadata schema must be JSON with a `fields` array" },
-  );
+  .superRefine((v, ctx) => {
+    if (v === "") return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(v);
+    } catch {
+      ctx.addIssue({ code: "custom", message: "Metadata schema must be valid JSON" });
+      return;
+    }
+    const [first] = validateMetadataSchema(parsed);
+    if (first)
+      ctx.addIssue({
+        code: "custom",
+        message: first.field === null ? first.message : `Field ${first.field + 1}: ${first.message}`,
+      });
+  });
 
 const propertiesSchema = z
   .string()
