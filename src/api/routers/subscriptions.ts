@@ -29,7 +29,8 @@ const pairSchema = z.object({
 const overrideSchema = z.string().trim().max(512).nullable();
 
 // A message format, checked here so a broken one never reaches a forward.
-const formatSchema = z
+/** A message format template: validated on save, null clears it. */
+export const formatSchema = z
   .string()
   .max(TEMPLATE_LIMITS.source)
   .nullable()

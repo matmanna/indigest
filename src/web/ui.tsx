@@ -108,6 +108,8 @@ export interface Channel {
   metadataRequired: boolean;
   properties: string;
   staticMetadata: string;
+  forwardFormat?: string | null;
+  forwardFormatLocked?: boolean;
   createdAt: string;
   canManage?: boolean;
 }

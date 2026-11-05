@@ -59,6 +59,8 @@ type Patch = Partial<
     | "metadataRequired"
     | "properties"
     | "staticMetadata"
+    | "forwardFormat"
+    | "forwardFormatLocked"
   >
 >;
 
@@ -763,6 +765,10 @@ const FORMAT_EXAMPLES: { label: string; format: string }[] = [
     format: "{% if meta.title %}*{{ meta.title }}*\n{% endif %}{{ text }}",
   },
   {
+    label: "Byline",
+    format: '*{{ meta.title | default: "New post" }}*\n_by {{ author }} in {{ channel.mention }}_\n\n{{ text }}',
+  },
+  {
     label: "Every field",
     format: "{{ text }}\n{% for f in fields %}\n• *{{ f.label }}:* {{ f.value }}{% endfor %}",
   },
@@ -866,6 +872,116 @@ function MrkdwnPreview({ text }: { text: string }) {
   );
 }
 
+function useFormatPreview(format: string, sample: Record<string, unknown>) {
+  return useMemo(() => {
+    if (!format.trim()) return { out: "", error: null as string | null };
+    try {
+      return { out: renderTemplate(parseTemplate(format), sample).trim(), error: null as string | null };
+    } catch (e) {
+      return { out: "", error: describeTemplateError(format, e) as string | null };
+    }
+  }, [format, sample]);
+}
+
+/** Format source, example buttons, live preview and reference. */
+function FormatEditor({
+  id,
+  value,
+  onChange,
+  preview,
+  disabled,
+  hint,
+  emptyLabel,
+}: {
+  id: string;
+  value: string;
+  onChange: (next: string) => void;
+  preview: { out: string; error: string | null };
+  disabled?: boolean;
+  hint: ReactNode;
+  emptyLabel: ReactNode;
+}) {
+  return (
+    <>
+      <div className="field">
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <label className="field-label" htmlFor={id}>
+            Format
+          </label>
+          {!disabled && (
+            <div className="row" style={{ gap: 6 }}>
+              {FORMAT_EXAMPLES.map((ex) => (
+                <button key={ex.label} type="button" className="btn btn-sm btn-ghost" onClick={() => onChange(ex.format)}>
+                  {ex.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <textarea
+          id={id}
+          className="textarea mono"
+          rows={8}
+          spellCheck={false}
+          disabled={disabled}
+          value={value}
+          placeholder={"{% if meta.title %}*{{ meta.title }}*\n{% endif %}{{ text }}"}
+          onChange={(e) => onChange((e.currentTarget as HTMLTextAreaElement).value)}
+        />
+        {preview.error ? <span className="field-error">{preview.error}</span> : <span className="field-hint">{hint}</span>}
+      </div>
+
+      <div className="field">
+        <label className="field-label">Preview</label>
+        <div className="code-block" style={{ fontFamily: "inherit", whiteSpace: "normal" }}>
+          {preview.out ? (
+            <MrkdwnPreview text={preview.out} />
+          ) : (
+            <span className="muted">{value.trim() ? "Renders nothing, so the default layout is used." : emptyLabel}</span>
+          )}
+        </div>
+        <span className="field-hint">Sample values shaped like the source channel's metadata fields.</span>
+      </div>
+
+      <details>
+        <summary className="field-label" style={{ cursor: "pointer" }}>
+          What you can use
+        </summary>
+        <div className="stack-sm small text-2" style={{ marginTop: 8 }}>
+          <div>
+            <code>{"{{ text }}"}</code> message · <code>{"{{ author }}"}</code> · <code>{"{{ channel.mention }}"}</code> ·{" "}
+            <code>{"{{ link }}"}</code> · <code>{"{{ date }}"}</code> · <code>{"{{ meta.<field> }}"}</code> ·{" "}
+            <code>fields</code> (each has <code>label</code>, <code>value</code>) · <code>{"{{ props.<name> }}"}</code> ·{" "}
+            <code>{"{{ static }}"}</code>
+          </div>
+          <div>
+            <code>{"{% if a == b %}…{% elif … %}…{% else %}…{% endif %}"}</code>, <code>unless</code>, <code>and</code>,{" "}
+            <code>or</code>, <code>not</code>, <code>contains</code>, <code>empty</code>
+          </div>
+          <div>
+            <code>{"{% for x in list limit: 5 %}…{% else %}…{% endfor %}"}</code> with <code>loop.index</code>,{" "}
+            <code>loop.first</code>, <code>loop.last</code> · <code>{"{% assign x = … %}"}</code> ·{" "}
+            <code>{"{# comment #}"}</code> · <code>{"{%- -%}"}</code> trims whitespace
+          </div>
+          <div>
+            Filters: <code>upper</code> <code>lower</code> <code>capitalize</code> <code>strip</code>{" "}
+            <code>default: "x"</code> <code>truncate: 100</code> <code>replace: "a", "b"</code> <code>split: ","</code>{" "}
+            <code>join: ", "</code> <code>size</code> <code>first</code> <code>last</code> <code>sort</code>{" "}
+            <code>reverse</code> <code>uniq</code> <code>plus</code> <code>minus</code> <code>times</code>{" "}
+            <code>round</code> <code>plural: "item", "items"</code> <code>date: "short|long|pretty|time|datetime|iso"</code>{" "}
+            <code>link: "label"</code> <code>bold</code> <code>italic</code> <code>strike</code> <code>code</code>{" "}
+            <code>quote</code> <code>bullets</code>
+          </div>
+          <div>
+            Values are escaped, so metadata can't add mentions or links. Formats can't use @channel, @here or group
+            mentions. The <code>agreement</code> field is never available.
+          </div>
+        </div>
+      </details>
+    </>
+  );
+}
+
 function FormatModal({
   sub,
   onClose,
@@ -885,14 +1001,11 @@ function FormatModal({
     setErr(null);
   }, [sub]);
   const sample = useMemo(() => sampleFormatContext(source.data), [source.data]);
-  const preview = useMemo(() => {
-    if (!format.trim()) return { out: "", error: null };
-    try {
-      return { out: renderTemplate(parseTemplate(format), sample).trim(), error: null };
-    } catch (e) {
-      return { out: "", error: describeTemplateError(format, e) };
-    }
-  }, [format, sample]);
+  const preview = useFormatPreview(format, sample);
+  const publisherFormat = source.data?.forwardFormat || "";
+  const locked = !!publisherFormat && !!source.data?.forwardFormatLocked;
+  const publisherPreview = useFormatPreview(publisherFormat, sample);
+  const sourceName = `#${sub?.sourceName || sub?.sourceChannelId || "source"}`;
 
   async function save(value: string) {
     if (!sub) return;
@@ -918,7 +1031,7 @@ function FormatModal({
       open={!!sub}
       onClose={onClose}
       title="Message format"
-      description={sub ? `How forwards from #${sub.sourceName || sub.sourceChannelId} read here.` : undefined}
+      description={sub ? `How forwards from ${sourceName} read here.` : undefined}
       width={720}
     >
       <form
@@ -929,88 +1042,37 @@ function FormatModal({
           if (!preview.error) save(format);
         }}
       >
-        <div className="field">
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <label className="field-label" htmlFor="format-src">
-              Format
-            </label>
-            <div className="row" style={{ gap: 6 }}>
-              {FORMAT_EXAMPLES.map((ex) => (
-                <button key={ex.label} type="button" className="btn btn-sm btn-ghost" onClick={() => setFormat(ex.format)}>
-                  {ex.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <textarea
-            id="format-src"
-            className="textarea mono"
-            rows={8}
-            spellCheck={false}
-            value={format}
-            placeholder={"{% if meta.title %}*{{ meta.title }}*\n{% endif %}{{ text }}"}
-            onChange={(e) => setFormat((e.currentTarget as HTMLTextAreaElement).value)}
-          />
-          {preview.error ? (
-            <span className="field-error">{preview.error}</span>
-          ) : (
-            <span className="field-hint">Leave empty for the default layout. The "Forwarded from" footer is always added.</span>
-          )}
-        </div>
-
-        <div className="field">
-          <label className="field-label">Preview</label>
-          <div className="code-block" style={{ fontFamily: "inherit", whiteSpace: "normal" }}>
-            {preview.out ? (
-              <MrkdwnPreview text={preview.out} />
+        {locked ? (
+          <Notice tone="warn" icon="lock">
+            {sourceName} locks its own format for every subscriber, so a format saved here isn't used.
+          </Notice>
+        ) : publisherFormat ? (
+          <Notice icon="info">Leave this empty to use {sourceName}'s format. A format saved here replaces it.</Notice>
+        ) : null}
+        <FormatEditor
+          id="format-src"
+          value={format}
+          onChange={setFormat}
+          preview={preview}
+          hint={
+            publisherFormat
+              ? `Leave empty for ${sourceName}'s format. The "Forwarded from" footer is always added.`
+              : 'Leave empty for the default layout. The "Forwarded from" footer is always added.'
+          }
+          emptyLabel={
+            publisherFormat && publisherPreview.out ? (
+              <MrkdwnPreview text={publisherPreview.out} />
             ) : (
-              <span className="muted">{format.trim() ? "Renders nothing, so the default layout is used." : "Default layout"}</span>
-            )}
-          </div>
-          <span className="field-hint">Sample values shaped like the source channel's metadata fields.</span>
-        </div>
-
-        <details>
-          <summary className="field-label" style={{ cursor: "pointer" }}>
-            What you can use
-          </summary>
-          <div className="stack-sm small text-2" style={{ marginTop: 8 }}>
-            <div>
-              <code>{"{{ text }}"}</code> message · <code>{"{{ author }}"}</code> · <code>{"{{ channel.mention }}"}</code> ·{" "}
-              <code>{"{{ link }}"}</code> · <code>{"{{ date }}"}</code> · <code>{"{{ meta.<field> }}"}</code> ·{" "}
-              <code>fields</code> (each has <code>label</code>, <code>value</code>) · <code>{"{{ props.<name> }}"}</code> ·{" "}
-              <code>{"{{ static }}"}</code>
-            </div>
-            <div>
-              <code>{"{% if a == b %}…{% elif … %}…{% else %}…{% endif %}"}</code>, <code>unless</code>, <code>and</code>,{" "}
-              <code>or</code>, <code>not</code>, <code>contains</code>, <code>empty</code>
-            </div>
-            <div>
-              <code>{"{% for x in list limit: 5 %}…{% else %}…{% endfor %}"}</code> with <code>loop.index</code>,{" "}
-              <code>loop.first</code>, <code>loop.last</code> · <code>{"{% assign x = … %}"}</code> ·{" "}
-              <code>{"{# comment #}"}</code> · <code>{"{%- -%}"}</code> trims whitespace
-            </div>
-            <div>
-              Filters: <code>upper</code> <code>lower</code> <code>capitalize</code> <code>strip</code>{" "}
-              <code>default: "x"</code> <code>truncate: 100</code> <code>replace: "a", "b"</code> <code>split: ","</code>{" "}
-              <code>join: ", "</code> <code>size</code> <code>first</code> <code>last</code> <code>sort</code>{" "}
-              <code>reverse</code> <code>uniq</code> <code>plus</code> <code>minus</code> <code>times</code>{" "}
-              <code>round</code> <code>plural: "item", "items"</code> <code>date: "short|long|pretty|time|datetime|iso"</code>{" "}
-              <code>link: "label"</code> <code>bold</code> <code>italic</code> <code>strike</code> <code>code</code>{" "}
-              <code>quote</code> <code>bullets</code>
-            </div>
-            <div>
-              Values are escaped, so metadata can't add mentions or links. Formats can't use @channel, @here or group
-              mentions. The <code>agreement</code> field is never available.
-            </div>
-          </div>
-        </details>
+              "Default layout"
+            )
+          }
+        />
 
         {err && <Notice tone="danger" icon="alert">{err}</Notice>}
         <div className="modal-actions">
           {sub?.format && (
             <button type="button" className="btn" style={{ marginRight: "auto" }} disabled={busy} onClick={() => save("")}>
-              Reset to default
+              {publisherFormat ? `Use ${sourceName}'s format` : "Reset to default"}
             </button>
           )}
           <button type="button" className="btn" onClick={onClose}>
@@ -1025,9 +1087,75 @@ function FormatModal({
   );
 }
 
+/** The publisher's default format for forwards, and whether it overrides subscribers' formats. */
+function ForwardFormatCard({ ch, canManage, save }: Ctx) {
+  const sample = useMemo(() => sampleFormatContext(ch), [ch]);
+  return (
+    <SectionCard
+      title="Forward format"
+      description="How this channel's forwards read in subscribing channels. Subscribers can set their own format unless you lock this one."
+      canManage={canManage}
+      initial={{ format: ch.forwardFormat || "", locked: !!ch.forwardFormatLocked }}
+      onSave={(v) =>
+        save(
+          { forwardFormat: v.format.trim() ? v.format : null, forwardFormatLocked: v.locked },
+          v.format.trim() ? "Forward format saved" : "Forwards use the default layout",
+        )
+      }
+    >
+      {(v, set) => (
+        <ForwardFormatBody v={v} set={set} sample={sample} canManage={canManage} />
+      )}
+    </SectionCard>
+  );
+}
+
+function ForwardFormatBody({
+  v,
+  set,
+  sample,
+  canManage,
+}: {
+  v: { format: string; locked: boolean };
+  set: (next: { format: string; locked: boolean }) => void;
+  sample: Record<string, unknown>;
+  canManage: boolean;
+}) {
+  const preview = useFormatPreview(v.format, sample);
+  return (
+    <>
+      <div className="card-body stack" style={{ gap: 18 }}>
+        <FormatEditor
+          id="forward-format-src"
+          value={v.format}
+          onChange={(format) => set({ ...v, format })}
+          preview={preview}
+          disabled={!canManage}
+          hint='Leave empty for the default layout. The "Forwarded from" footer is always added.'
+          emptyLabel="Default layout"
+        />
+      </div>
+      <Setting
+        title="Lock this format"
+        control={
+          <Switch
+            label="Lock this format"
+            checked={v.locked}
+            disabled={!canManage || !v.format.trim()}
+            onChange={(locked) => set({ ...v, locked })}
+          />
+        }
+      >
+        Use this format in every subscribing channel, even ones that set their own.
+      </Setting>
+    </>
+  );
+}
+
 function PubSubTab({
   ch,
   canManage,
+  save,
   subs,
   reloadSubs,
 }: Ctx & { subs: SubscriptionRow[] | null; reloadSubs: () => void }) {
@@ -1146,7 +1274,14 @@ function PubSubTab({
                     ) : (
                       <span className="muted">Original author</span>
                     )}
-                    {s.format && <span className="badge outline" style={{ marginLeft: 8 }}>custom format</span>}
+                    {(() => {
+                      const src = sources.data?.find((c) => c.id === s.sourceChannelId);
+                      if (src?.forwardFormat && src.forwardFormatLocked)
+                        return <span className="badge outline" style={{ marginLeft: 8 }} title="The source channel locks its format">source format</span>;
+                      if (s.format) return <span className="badge outline" style={{ marginLeft: 8 }}>custom format</span>;
+                      if (src?.forwardFormat) return <span className="badge outline" style={{ marginLeft: 8 }}>source format</span>;
+                      return null;
+                    })()}
                   </td>
                   <td className="hide-md muted">{fmtDate(s.createdAt)}</td>
                   <td className="right">
@@ -1174,6 +1309,8 @@ function PubSubTab({
           </table>
         )}
       </div>
+
+      {ch.enabled && <ForwardFormatCard ch={ch} canManage={canManage} save={save} />}
 
       <div className="card">
         <div className="card-header">
