@@ -7,6 +7,7 @@ import {
   hasProvidedMetadata,
   hasChannelPing,
   hasRecentSubstantiveMessage,
+  isHumanMessageSubtype,
   isLinkOnly,
   isMessageEmpty,
   isSlackPermalink,
@@ -308,10 +309,27 @@ describe("pure helpers", () => {
       expect(admit({ user: "SELF", autoApproveUsers: ["*"] }))
         .toEqual({ allowed: false, reason: "self-authored" });
     });
-    test("drops every subtype that is not a plain message or bot_message", () => {
-      for (const subtype of ["channel_join", "channel_leave", "group_join", "thread_broadcast", "file_share"]) {
+    test("drops every subtype that is not a human post or bot_message", () => {
+      for (const subtype of ["channel_join", "channel_leave", "group_join", "thread_broadcast"]) {
         expect(admit({ subtype })).toEqual({ allowed: false, reason: `unhandled subtype ${subtype}` });
       }
+    });
+    test("admits a file_share message exactly like a plain human message", () => {
+      // Slack sends any post with an uploaded image or file as file_share.
+      const cases: Partial<Parameters<typeof resolveMessageAdmission>[0]>[] = [
+        {},
+        { autoApproveUsers: ["*"] },
+        { autoApproveUsers: ["U1"] },
+        { autoApproveUsers: ["U2"] },
+        { manualUsers: ["U1"] },
+        { manualUsers: ["U2"] },
+        { triggerMode: "shortcut" },
+        { user: "SELF" },
+      ];
+      for (const c of cases) {
+        expect(admit({ ...c, subtype: "file_share" })).toEqual(admit({ ...c, subtype: undefined }));
+      }
+      expect(admit({ subtype: "file_share" })).toEqual({ allowed: true, disposition: "prompt" });
     });
     test("disposition for admitted bot events matches the disposition as a human", () => {
       const auto = ["UA"];
@@ -370,5 +388,18 @@ describe("formatStaticMetadata", () => {
   test("returns empty string when nothing is set", () => {
     expect(formatStaticMetadata("")).toBe("");
     expect(formatStaticMetadata(undefined)).toBe("");
+  });
+});
+
+describe("isHumanMessageSubtype", () => {
+  test("treats a missing subtype and file_share as a human post", () => {
+    expect(isHumanMessageSubtype(undefined)).toBe(true);
+    expect(isHumanMessageSubtype("")).toBe(true);
+    expect(isHumanMessageSubtype("file_share")).toBe(true);
+  });
+  test("rejects bot, system and edit subtypes", () => {
+    for (const subtype of ["bot_message", "channel_join", "message_changed", "message_deleted", "thread_broadcast"]) {
+      expect(isHumanMessageSubtype(subtype)).toBe(false);
+    }
   });
 });

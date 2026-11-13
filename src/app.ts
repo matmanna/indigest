@@ -812,6 +812,17 @@ export type MessageAdmission =
   | { allowed: false; reason: string };
 
 /**
+ * Subtypes that are still an ordinary human post. Slack sends a message with
+ * an uploaded file (an image, a PDF, ...) as `file_share`, even though the
+ * history API returns the same message with no subtype.
+ */
+const HUMAN_MESSAGE_SUBTYPES = new Set(["file_share"]);
+
+export function isHumanMessageSubtype(subtype: string | undefined): boolean {
+  return !subtype || HUMAN_MESSAGE_SUBTYPES.has(subtype);
+}
+
+/**
  * Decide whether a Slack message event should be admitted into the publish
  * pipeline, and if so how it should be handled. `bot_message` events are only
  * admitted when the bot user is in a publish whitelist (auto or manual), and
@@ -838,7 +849,7 @@ export function resolveMessageAdmission(opts: {
   if (opts.selfBotId && opts.botId && opts.botId === opts.selfBotId) {
     return { allowed: false, reason: "self-authored" };
   }
-  if (opts.subtype && opts.subtype !== "bot_message") {
+  if (!isHumanMessageSubtype(opts.subtype) && opts.subtype !== "bot_message") {
     return { allowed: false, reason: `unhandled subtype ${opts.subtype}` };
   }
   if (opts.subtype === "bot_message") {
@@ -855,7 +866,7 @@ export function resolveMessageAdmission(opts: {
       return { allowed: false, reason: "unwhitelisted bot" };
     }
   }
-const dispositionId =
+  const dispositionId =
     [opts.user, opts.botId].find(
       (id) =>
         !!id &&
@@ -2399,13 +2410,18 @@ app.post("/events", async (c) => {
           manualUsers: ch.manualUsers,
           triggerMode: ch.triggerMode,
         });
-        if (!admission.allowed) return;
+        if (!admission.allowed) {
+          console.log(
+            `Skipping message ts=${ev.ts} channel=${ev.channel}: ${admission.reason}`,
+          );
+          return;
+        }
 
         await syncChannelName(db, slack, ch);
         logMessageContentProbe("incoming", ev);
 
         // Log full event for debugging empty forward messages
-        if (!ev.text && !ev.subtype) {
+        if (!ev.text && isHumanMessageSubtype(ev.subtype)) {
           console.log(
             "Empty message event:",
             JSON.stringify({
@@ -2553,7 +2569,11 @@ app.post("/events", async (c) => {
       }
 
       // Thread reply tracking (separate from the top-level message handler above)
-      if (ev.type === "message" && !ev.subtype && ev.thread_ts) {
+      if (
+        ev.type === "message" &&
+        isHumanMessageSubtype(ev.subtype) &&
+        ev.thread_ts
+      ) {
         console.log(
           `Thread reply: channel=${ev.channel} thread_ts=${ev.thread_ts} ts=${ev.ts}`,
         );
