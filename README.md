@@ -84,7 +84,7 @@ _tldr: if you forget what to do, run `/in`_
 if channel A subscrbies to channel B, when a message is approved in channel B, it is automatically forwarded to channel A as a new Slack message  (either posted as a forward or with the original author's name, message, and profile picture.
 
 > [!NOTE]
-> exceptions to publishing: messages that are empty, contain only a link, or are `@here`/`@channel` pings (when recent substantive content exists) are not forwarded.
+> exceptions to publishing: messages that are empty, contain only a link, or are `@here`/`@channel` pings (when a substantive post landed in the same channel in the last 30 minutes) are not forwarded.
 
 ## channel properties & subscriber profile overrides
 

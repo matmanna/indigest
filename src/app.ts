@@ -686,6 +686,13 @@ export function hasRecentSubstantiveMessage(
   });
 }
 
+/**
+ * An @channel/@here post is skipped when a substantive post landed in the
+ * same channel within this window. Newsletter channels such as #happenings
+ * post the episode first and the @channel announcement 7 to 16 minutes later.
+ */
+export const PING_DEDUPE_WINDOW_MS = 30 * 60 * 1000;
+
 export async function shouldForward(
   msg: StoreMessage,
   db: any,
@@ -702,7 +709,7 @@ export async function shouldForward(
     return false;
   }
   if (hasChannelPing(policyText)) {
-    const since = new Date(Date.now() - 5 * 60 * 1000);
+    const since = new Date(Date.now() - PING_DEDUPE_WINDOW_MS);
     const recent = await q.getRecentMessages(db, msg.channelId, since);
     if (hasRecentSubstantiveMessage(msg, recent)) return false;
   }

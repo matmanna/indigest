@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   canAccessFeed,
   chunkLongText,
@@ -11,6 +11,7 @@ import {
   isLinkOnly,
   isMessageEmpty,
   isSlackPermalink,
+  PING_DEDUPE_WINDOW_MS,
   metadataRequirementSatisfied,
   resolveMessageAdmission,
   resolvePublishDisposition,
@@ -18,6 +19,7 @@ import {
   shouldForward,
 } from "../src/app";
 import { generateApiKey, hashSecret, verifySecret } from "../src/lib/api-keys";
+import * as q from "../src/db/queries";
 import {
   mergeAuthorLists,
   parseBool,
@@ -75,6 +77,27 @@ describe("pure helpers", () => {
     expect(await shouldForward(msg("https://hackclub.slack.com/archives/C1/p123"), db)).toBe(true);
     expect(await shouldForward(msg("https://example.com"), db)).toBe(false);
     expect(await shouldForward(msg("   "), db)).toBe(true);
+  });
+  test("skips an @channel announcement posted up to 30 minutes after the post it announces", async () => {
+    // #happenings posts the episode, then the @channel announcement 7-16 minutes later.
+    const now = Date.now();
+    const episode = { ...msg("_It's Monday night..._"), slackTs: "1.0", timestamp: new Date(now - 16 * 60 * 1000).toISOString() };
+    const announcement = { ...msg("@channel we're back with happenings"), slackTs: "2.0", rawText: "<!channel> we're back with happenings" };
+    let since: Date | undefined;
+    const spy = spyOn(q, "getRecentMessages").mockImplementation(async (_db, _ch, s) => {
+      since = s;
+      return new Date(episode.timestamp) >= s ? [episode as any] : [];
+    });
+    try {
+      expect(await shouldForward(announcement as any, {})).toBe(false);
+      expect(PING_DEDUPE_WINDOW_MS).toBe(30 * 60 * 1000);
+      expect(now - since!.getTime()).toBeGreaterThanOrEqual(PING_DEDUPE_WINDOW_MS - 1000);
+      // An @channel post with nothing substantive before it is still forwarded.
+      spy.mockImplementation(async () => []);
+      expect(await shouldForward(announcement as any, {})).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
   test("uses an existing pub bot action as the update target", () => {
     const action = {
